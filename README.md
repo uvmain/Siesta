@@ -64,7 +64,7 @@ docker run --rm --publish 8080:8080 --env AUTH_USERNAME=admin --env AUTH_PASSWOR
 
 ## API and persistence
 
-All `/api` endpoints except health and sign-in require an HttpOnly, `SameSite=Lax` cookie session. siesta stores password hashes, sessions, collections, and named environments in SQLite. Environment values, including secrets, are resolved in `{{VARIABLE}}` placeholders by the server before it makes a request. Marking a variable secret masks it in the environment editor; it remains available to requests.
+All `/api` endpoints except health and sign-in require an HttpOnly, `SameSite=Lax` cookie session. siesta stores password hashes, sessions, collections, and named environments in SQLite. Collection variables provide reusable, non-secret defaults; selected environment values, including secrets, override them. Both scopes resolve `{{VARIABLE}}` placeholders before a request is sent. Marking an environment variable secret masks it in the environment editor; it remains available to requests.
 
 The initial REST-client API is:
 

@@ -1,104 +1,34 @@
 <script setup lang="ts">
-interface Environment {
-  id: number
-  name: string
-  values: string
-  secretKeys: string
-}
-
-interface EnvironmentEntry {
-  key: string
-  value: string
-  secret: boolean
-}
-
-type ExecutionMode = 'browser' | 'backend'
-type AuthType = 'none' | 'bearer' | 'basic'
-type BodyMode = 'raw' | 'form-data'
-
-interface RequestAuth {
-  type: AuthType
-  token?: string
-  username?: string
-  password?: string
-}
-
-interface FormField {
-  key: string
-  value: string
-}
-
-interface StoredRequest {
-  id: string
-  name: string
-  method: string
-  url: string
-  headers: Record<string, string>
-  body: string
-  bodyMode?: BodyMode
-  formFields?: FormField[]
-  auth?: RequestAuth
-  folderId?: string
-}
-
-interface StoredFolder {
-  id: string
-  name: string
-}
-
-interface CollectionContents {
-  executionMode: ExecutionMode
-  requests: StoredRequest[]
-  folders: StoredFolder[]
-}
-
-interface Collection {
-  id: number
-  name: string
-  contents: string
-}
-
-interface ApiError {
-  error?: string
-}
-
-interface RequestResult {
-  status: number
-  statusText: string
-  headers: Record<string, string>
-  body: string
-  truncated: boolean
-}
-
-interface RequestHistory {
-  id: number
-  requestName: string
-  method: string
-  url: string
-  status: number
-  statusText: string
-  executionMode: ExecutionMode
-  executedAt: number
-}
+import type { Collection, Environment, FormField, RequestAuth, RequestHistory, RequestResult } from '~/logic/api'
+import type { AuthType, BodyMode, CollectionContents, EnvironmentEntry, StoredFolder, StoredRequest } from '~/types/workspace'
+import { api } from '~/logic/api'
+import { useWorkspaceState } from '~/logic/workspace-state'
 
 const router = useRouter()
+const { preferences, session, updatePreferences, saveDraft } = useWorkspaceState()
 const environments = ref<Environment[]>([])
 const editingEnvironmentId = ref<number | undefined>()
 const environmentName = ref('')
 const environmentEntries = ref<EnvironmentEntry[]>([])
 const environmentError = ref('')
 const collections = ref<Collection[]>([])
-const environmentId = ref<number | undefined>()
-const selectedCollectionId = ref<number | undefined>()
-const newCollectionName = ref('')
-const newFolderName = ref('')
+const environmentId = ref<number | undefined>(preferences.value.activeEnvironmentId)
+const selectedCollectionId = ref<number | undefined>(preferences.value.selectedCollectionId)
 const selectedFolderId = ref<string | undefined>()
-const method = ref('GET')
-const url = ref('https://httpbin.org/get')
-const headers = ref('{\n  "Accept": "application/json"\n}')
-const body = ref('')
-const bodyMode = ref<BodyMode>('raw')
-const formFields = ref<FormField[]>([{ key: '', value: '' }])
+const activeDraft = session.value.drafts[session.value.activeRequestTabId] ?? {
+  method: 'GET',
+  url: 'https://httpbin.org/get',
+  headers: '{\n  "Accept": "application/json"\n}',
+  body: '',
+  bodyMode: 'raw' as BodyMode,
+  formFields: [{ key: '', value: '' }],
+}
+const method = ref(activeDraft.method)
+const url = ref(activeDraft.url)
+const headers = ref(activeDraft.headers)
+const body = ref(activeDraft.body)
+const bodyMode = ref<BodyMode>(activeDraft.bodyMode)
+const formFields = ref<FormField[]>(activeDraft.formFields)
 const fileFieldName = ref('file')
 const attachedFiles = ref<File[]>([])
 const authType = ref<AuthType>('none')
@@ -113,17 +43,8 @@ const importing = ref(false)
 const history = ref<RequestHistory[]>([])
 const responseSearch = ref('')
 
-async function getError(response: Response): Promise<string> {
-  const error = await response.json().catch(() => ({})) as ApiError
-  return error.error ?? `Request failed with ${response.status}`
-}
-
 async function loadEnvironments(): Promise<void> {
-  const response = await fetch('/api/environments')
-  if (!response.ok) {
-    throw new Error(await getError(response))
-  }
-  environments.value = await response.json() as Environment[]
+  environments.value = await api.listEnvironments()
 }
 
 function openEnvironment(environment?: Environment): void {
@@ -159,32 +80,27 @@ async function saveEnvironment(): Promise<void> {
   }
   const values = Object.fromEntries(entries.map(entry => [entry.key.trim(), entry.value]))
   const secretKeys = entries.filter(entry => entry.secret).map(entry => entry.key.trim())
-  const endpoint = editingEnvironmentId.value ? `/api/environments/${editingEnvironmentId.value}` : '/api/environments'
-  const response = await fetch(endpoint, {
-    method: editingEnvironmentId.value ? 'PUT' : 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: environmentName.value.trim(), values, secretKeys }),
-  })
-  if (!response.ok) {
-    environmentError.value = await getError(response)
+  let environment: Environment
+  try {
+    environment = editingEnvironmentId.value
+      ? await api.updateEnvironment(editingEnvironmentId.value, environmentName.value.trim(), values, secretKeys)
+      : await api.createEnvironment(environmentName.value.trim(), values, secretKeys)
+  }
+  catch (error) {
+    environmentError.value = error instanceof Error ? error.message : 'Unable to save environment'
     return
   }
-  const environment = await response.json() as Environment
   environments.value = [...environments.value.filter(item => item.id !== environment.id), environment].sort((a, b) => a.name.localeCompare(b.name))
   environmentId.value = environment.id
   openEnvironment(environment)
 }
 
 async function loadCollections(): Promise<void> {
-  const response = await fetch('/api/collections')
-  if (!response.ok) {
-    throw new Error(await getError(response))
-  }
-  collections.value = await response.json() as Collection[]
+  collections.value = await api.listCollections()
 }
 
 function defaultContents(): CollectionContents {
-  return { executionMode: 'backend', requests: [], folders: [] }
+  return { executionMode: 'backend', requests: [], folders: [], variables: {} }
 }
 
 function collectionContents(collection: Collection): CollectionContents {
@@ -194,6 +110,9 @@ function collectionContents(collection: Collection): CollectionContents {
       executionMode: contents.executionMode === 'backend' ? 'backend' : 'browser',
       requests: Array.isArray(contents.requests) ? contents.requests : [],
       folders: Array.isArray(contents.folders) ? contents.folders : [],
+      variables: contents.variables && typeof contents.variables === 'object' && !Array.isArray(contents.variables) && Object.values(contents.variables).every(value => typeof value === 'string')
+        ? contents.variables as Record<string, string>
+        : {},
     }
   }
   catch {
@@ -204,24 +123,31 @@ function collectionContents(collection: Collection): CollectionContents {
 const selectedCollection = computed(() => collections.value.find(collection => collection.id === selectedCollectionId.value))
 const selectedContents = computed(() => selectedCollection.value ? collectionContents(selectedCollection.value) : defaultContents())
 
+function withFolderParent(folder: StoredFolder, parentId?: string): StoredFolder {
+  const { parentId: _, ...withoutParent } = folder
+  return parentId ? { ...withoutParent, parentId } : withoutParent
+}
+
+function withRequestFolder(request: StoredRequest, folderId?: string): StoredRequest {
+  const { folderId: _, ...withoutFolder } = request
+  return folderId ? { ...withoutFolder, folderId } : withoutFolder
+}
+
 function resolveBrowserVariables(value: string): string {
+  const variables: Record<string, string> = { ...selectedContents.value.variables }
   const environment = environments.value.find(item => item.id === environmentId.value)
-  if (!environment) {
-    return value
-  }
-  try {
-    const variables: unknown = JSON.parse(environment.values)
-    if (!variables || typeof variables !== 'object' || Array.isArray(variables)) {
-      return value
+  if (environment) {
+    try {
+      const environmentVariables: unknown = JSON.parse(environment.values)
+      if (environmentVariables && typeof environmentVariables === 'object' && !Array.isArray(environmentVariables)) {
+        Object.assign(variables, environmentVariables)
+      }
     }
-    return value.replace(/\{\{([a-z_]\w*)\}\}/gi, (_, key: string) => {
-      const replacement = (variables as Record<string, unknown>)[key]
-      return typeof replacement === 'string' ? replacement : ''
-    })
+    catch {
+      // Environment records are validated by the API before they are stored.
+    }
   }
-  catch {
-    return value
-  }
+  return value.replace(/\{\{([a-z_]\w*)\}\}/gi, (_, key: string) => variables[key] ?? '')
 }
 
 function currentAuth(): RequestAuth {
@@ -264,59 +190,123 @@ function setAttachedFiles(event: Event): void {
 }
 
 async function saveCollection(collection: Collection, contents: CollectionContents): Promise<void> {
-  const response = await fetch(`/api/collections/${collection.id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: collection.name, contents }),
-  })
-  if (!response.ok) {
-    throw new Error(await getError(response))
-  }
-  const saved = await response.json() as Collection
+  const saved = await api.updateCollection(collection.id, collection.name, contents)
   collections.value = collections.value.map(item => item.id === saved.id ? saved : item)
 }
 
-async function createCollection(): Promise<void> {
-  if (!newCollectionName.value.trim()) {
+async function createCollection(name: string): Promise<void> {
+  if (!name.trim()) {
     collectionError.value = 'Enter a collection name.'
     return
   }
   collectionError.value = ''
-  const response = await fetch('/api/collections', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: newCollectionName.value.trim(), contents: defaultContents() }),
-  })
-  if (!response.ok) {
-    collectionError.value = await getError(response)
+  let collection: Collection
+  try {
+    collection = await api.createCollection(name.trim(), defaultContents())
+  }
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to create collection'
     return
   }
-  const collection = await response.json() as Collection
   collections.value.unshift(collection)
   selectedCollectionId.value = collection.id
-  newCollectionName.value = ''
 }
 
-async function createFolder(): Promise<void> {
+async function createFolder({ name, parentId }: { name: string, parentId?: string }): Promise<void> {
   if (!selectedCollection.value) {
     collectionError.value = 'Select a collection before adding a folder.'
     return
   }
-  if (!newFolderName.value.trim()) {
+  if (!name.trim()) {
     collectionError.value = 'Enter a folder name.'
     return
   }
   try {
-    const folder: StoredFolder = { id: crypto.randomUUID(), name: newFolderName.value.trim() }
+    const folder: StoredFolder = { id: crypto.randomUUID(), name: name.trim(), ...(parentId ? { parentId } : {}) }
     await saveCollection(selectedCollection.value, {
       ...selectedContents.value,
       folders: [...selectedContents.value.folders, folder],
     })
     selectedFolderId.value = folder.id
-    newFolderName.value = ''
   }
   catch (error) {
     collectionError.value = error instanceof Error ? error.message : 'Unable to save folder'
+  }
+}
+
+async function deleteFolder(id: string): Promise<void> {
+  if (!selectedCollection.value) {
+    return
+  }
+  const folder = selectedContents.value.folders.find(item => item.id === id)
+  if (!folder) {
+    return
+  }
+  const parentId = folder.parentId
+  try {
+    await saveCollection(selectedCollection.value, {
+      ...selectedContents.value,
+      folders: selectedContents.value.folders
+        .filter(item => item.id !== id)
+        .map(item => item.parentId === id ? withFolderParent(item, parentId) : item),
+      requests: selectedContents.value.requests
+        .map(item => item.folderId === id ? withRequestFolder(item, parentId) : item),
+    })
+    if (selectedFolderId.value === id) {
+      selectedFolderId.value = parentId
+    }
+  }
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to delete folder'
+  }
+}
+
+async function moveFolder({ id, parentId }: { id: string, parentId?: string }): Promise<void> {
+  if (!selectedCollection.value) {
+    return
+  }
+  try {
+    await saveCollection(selectedCollection.value, {
+      ...selectedContents.value,
+      folders: selectedContents.value.folders.map(folder => folder.id === id ? withFolderParent(folder, parentId) : folder),
+    })
+  }
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to move folder'
+  }
+}
+
+async function moveRequest({ id, folderId }: { id: string, folderId?: string }): Promise<void> {
+  if (!selectedCollection.value) {
+    return
+  }
+  try {
+    await saveCollection(selectedCollection.value, {
+      ...selectedContents.value,
+      requests: selectedContents.value.requests.map(request => request.id === id ? withRequestFolder(request, folderId) : request),
+    })
+  }
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to move request'
+  }
+}
+
+async function duplicateRequest(request: StoredRequest): Promise<void> {
+  if (!selectedCollection.value) {
+    return
+  }
+  try {
+    await saveCollection(selectedCollection.value, {
+      ...selectedContents.value,
+      requests: [...selectedContents.value.requests, {
+        ...request,
+        id: crypto.randomUUID(),
+        name: `${request.name} copy`,
+      }],
+    })
+  }
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to duplicate request'
   }
 }
 
@@ -392,61 +382,64 @@ async function loadHistory(): Promise<void> {
     history.value = []
     return
   }
-  const response = await fetch(`/api/collections/${selectedCollectionId.value}/history`)
-  if (!response.ok) {
-    collectionError.value = await getError(response)
-    return
+  try {
+    history.value = await api.listRequestHistory(selectedCollectionId.value)
   }
-  history.value = await response.json() as RequestHistory[]
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to load request history'
+  }
 }
 
 async function saveRequestHistory(): Promise<void> {
   if (!selectedCollection.value || !result.value) {
     return
   }
-  const response = await fetch(`/api/collections/${selectedCollection.value.id}/history`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  try {
+    const entry = await api.createRequestHistory(selectedCollection.value.id, {
       requestName: `${method.value} ${url.value}`,
       method: method.value,
       url: url.value,
       status: result.value.status,
       statusText: result.value.statusText,
       executionMode: selectedContents.value.executionMode,
-    }),
-  })
-  if (!response.ok) {
-    collectionError.value = await getError(response)
-    return
+    })
+    history.value.unshift(entry)
   }
-  history.value.unshift(await response.json() as RequestHistory)
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to save request history'
+  }
 }
 
 async function exportCollection(): Promise<void> {
   if (!selectedCollection.value) {
     return
   }
-  const response = await fetch(`/api/collections/${selectedCollection.value.id}/export`)
-  if (!response.ok) {
-    collectionError.value = await getError(response)
+  let blob: Blob
+  try {
+    blob = await api.exportCollection(selectedCollection.value.id)
+  }
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to export collection'
     return
   }
   const link = document.createElement('a')
-  link.href = URL.createObjectURL(await response.blob())
+  link.href = URL.createObjectURL(blob)
   link.download = `${selectedCollection.value.name}.postman_collection.json`
   link.click()
   URL.revokeObjectURL(link.href)
 }
 
 async function downloadBackup(): Promise<void> {
-  const response = await fetch('/api/backups')
-  if (!response.ok) {
-    collectionError.value = await getError(response)
+  let backup: unknown
+  try {
+    backup = await api.createBackup()
+  }
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to create backup'
     return
   }
   const link = document.createElement('a')
-  link.href = URL.createObjectURL(new Blob([JSON.stringify(await response.json(), null, 2)], { type: 'application/json' }))
+  link.href = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }))
   link.download = 'siesta-backup.json'
   link.click()
   URL.revokeObjectURL(link.href)
@@ -458,14 +451,7 @@ async function restoreBackup(event: Event): Promise<void> {
     return
   }
   try {
-    const response = await fetch('/api/backups', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: await file.text(),
-    })
-    if (!response.ok) {
-      throw new Error(await getError(response))
-    }
+    await api.restoreBackup(await file.text())
     await Promise.all([loadCollections(), loadEnvironments()])
     collectionError.value = 'Backup restored. Collections were added and matching environments were updated.'
   }
@@ -483,15 +469,7 @@ async function importCollection(event: Event): Promise<void> {
   importing.value = true
   try {
     const format = file.name.endsWith('.bru') ? 'bruno' : 'postman'
-    const response = await fetch('/api/collections/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ format, content: await file.text() }),
-    })
-    if (!response.ok) {
-      throw new Error(await getError(response))
-    }
-    const collection = await response.json() as Collection
+    const collection = await api.importCollection(format, await file.text())
     collections.value.unshift(collection)
     selectedCollectionId.value = collection.id
   }
@@ -504,8 +482,7 @@ async function importCollection(event: Event): Promise<void> {
 }
 
 async function checkSession(): Promise<void> {
-  const response = await fetch('/api/auth/session')
-  if (!response.ok) {
+  if (!(await api.hasSession())) {
     await router.replace('/login')
     return
   }
@@ -513,9 +490,26 @@ async function checkSession(): Promise<void> {
 }
 
 async function logout(): Promise<void> {
-  await fetch('/api/auth/logout', { method: 'POST' })
+  await api.logout()
   result.value = undefined
   await router.replace('/login')
+}
+
+function newRequest(): void {
+  method.value = 'GET'
+  url.value = 'https://httpbin.org/get'
+  headers.value = '{\n  "Accept": "application/json"\n}'
+  body.value = ''
+  bodyMode.value = 'raw'
+  formFields.value = [{ key: '', value: '' }]
+  selectedFolderId.value = undefined
+  attachedFiles.value = []
+  authType.value = 'none'
+  bearerToken.value = ''
+  authUsername.value = ''
+  authPassword.value = ''
+  requestError.value = ''
+  result.value = undefined
 }
 
 async function sendRequest(): Promise<void> {
@@ -542,7 +536,9 @@ async function sendRequest(): Promise<void> {
       headers: parsedHeaders,
       body: body.value || undefined,
       formFields: bodyMode.value === 'form-data' ? formFields.value.filter(field => field.key) : undefined,
+      fileFieldName: bodyMode.value === 'form-data' ? fileFieldName.value : undefined,
       auth: currentAuth(),
+      collectionId: selectedCollection.value?.id,
       environmentId: environmentId.value,
     }
     if (selectedContents.value.executionMode === 'browser') {
@@ -572,24 +568,7 @@ async function sendRequest(): Promise<void> {
       }
     }
     else {
-      const requestBody = bodyMode.value === 'form-data'
-        ? (() => {
-            const formData = new FormData()
-            formData.append('request', JSON.stringify(request))
-            for (const file of attachedFiles.value) {
-              formData.append(`file:${fileFieldName.value || 'file'}`, file, file.name)
-            }
-            return formData
-          })()
-        : JSON.stringify(request)
-      const response = await fetch('/api/requests/send', bodyMode.value === 'form-data'
-        ? { method: 'POST', body: requestBody }
-        : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: requestBody })
-      if (!response.ok) {
-        requestError.value = await getError(response)
-        return
-      }
-      result.value = await response.json() as RequestResult
+      result.value = await api.sendBackendRequest(request, bodyMode.value === 'form-data' ? attachedFiles.value : [])
     }
     await saveRequestHistory()
   }
@@ -605,6 +584,25 @@ watch(selectedCollectionId, () => {
   void loadHistory()
 })
 
+watch([environmentId, selectedCollectionId], () => {
+  updatePreferences({
+    activeEnvironmentId: environmentId.value,
+    selectedCollectionId: selectedCollectionId.value,
+  })
+})
+
+watch([method, url, headers, body, bodyMode, formFields, selectedFolderId], () => {
+  saveDraft(session.value.activeRequestTabId, {
+    method: method.value,
+    url: url.value,
+    headers: headers.value,
+    body: body.value,
+    bodyMode: bodyMode.value,
+    formFields: formFields.value,
+    folderId: selectedFolderId.value,
+  })
+}, { deep: true })
+
 const displayedResponseBody = computed(() => {
   if (!result.value || !responseSearch.value.trim()) {
     return result.value?.body ?? ''
@@ -618,165 +616,183 @@ onMounted(checkSession)
 </script>
 
 <template>
-  <main class="box-border mx-auto grid w-full max-w-[1100px] gap-6 p-4 sm:p-8">
-    <header class="flex items-center justify-between gap-4">
-      <div>
-        <p class="mt-0 text-xs font-bold tracking-[.14em] text-indigo-600">siesta</p>
-        <h1 class="mt-0">REST client</h1>
-      </div>
-      <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="logout">Sign out</button>
-    </header>
-
-    <CollectionManager
-      :collections="collections"
-      :selected-collection-id="selectedCollectionId"
-      :selected-collection="selectedCollection"
-      :selected-contents="selectedContents"
-      :new-collection-name="newCollectionName"
-      :new-folder-name="newFolderName"
-      :history="history"
-      :collection-error="collectionError"
-      :importing="importing"
-      @update:selected-collection-id="selectedCollectionId = $event"
-      @update:new-collection-name="newCollectionName = $event"
-      @update:new-folder-name="newFolderName = $event"
-      @create-collection="createCollection"
-      @import-collection="importCollection"
-      @export-collection="exportCollection"
-      @download-backup="downloadBackup"
-      @restore-backup="restoreBackup"
-      @toggle-execution-mode="toggleExecutionMode"
-      @create-folder="createFolder"
-      @open-request="openRequest"
-      @open-history="url = $event.url; method = $event.method"
-    />
-
-    <section class="rounded-xl border border-slate-300 bg-white p-6 shadow-[0_8px_30px_rgb(15_23_42_/_8%)]">
-      <div class="flex items-center justify-between gap-4">
-        <div>
-          <h2 class="mt-0">Environments</h2>
-          <p class="mt-0 text-slate-500">Secret values are masked while editing.</p>
-        </div>
-        <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="openEnvironment()">New environment</button>
-      </div>
-      <div class="grid gap-4 sm:grid-cols-[minmax(10rem,1fr)_2fr]">
-        <div class="grid gap-2">
-          <button v-for="environment in environments" :key="environment.id" class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 text-left text-slate-700" type="button" @click="openEnvironment(environment)">{{ environment.name }}</button>
-        </div>
-        <div>
-          <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-            Name
-            <input v-model="environmentName" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" placeholder="Production">
-          </label>
-          <div v-for="(entry, index) in environmentEntries" :key="index" class="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
-            <input v-model="entry.key" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="Variable name" placeholder="API_URL">
-            <input v-model="entry.value" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" :type="entry.secret ? 'password' : 'text'" aria-label="Variable value" placeholder="Value">
-            <label class="m-0 mt-0 flex items-center whitespace-nowrap font-semibold text-slate-700"><input v-model="entry.secret" class="w-auto" type="checkbox"> Secret</label>
+  <WorkspaceShell :environments="environments" :environment-id="environmentId" @update:environment-id="environmentId = $event" @new-request="newRequest" @logout="logout">
+    <template #sidebar>
+      <CollectionTree
+        :collections="collections"
+        :selected-collection-id="selectedCollectionId"
+        :selected-contents="selectedContents"
+        :importing="importing"
+        @select-collection="selectedCollectionId = $event"
+        @create-collection="createCollection"
+        @create-folder="createFolder"
+        @delete-folder="deleteFolder"
+        @move-folder="moveFolder"
+        @move-request="moveRequest"
+        @open-request="openRequest"
+        @duplicate-request="duplicateRequest"
+        @import-collection="importCollection"
+        @export-collection="exportCollection"
+        @download-backup="downloadBackup"
+        @restore-backup="restoreBackup"
+        @toggle-execution-mode="toggleExecutionMode"
+      />
+      <p v-if="collectionError" class="px-2 text-xs text-danger">
+        {{ collectionError }}
+      </p>
+    </template>
+    <div class="box-border grid min-w-0 gap-6 p-4 sm:p-6">
+      <section class="rounded-xl border border-slate-300 bg-white p-6 shadow-[0_8px_30px_rgb(15_23_42_/_8%)]">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <h2 class="mt-0">
+              Environments
+            </h2>
+            <p class="mt-0 text-slate-500">
+              Secret values are masked while editing.
+            </p>
           </div>
-          <div class="mt-4 flex gap-2">
-            <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="addEnvironmentEntry">Add variable</button>
-            <button class="cursor-pointer rounded-md border border-indigo-600 bg-indigo-600 px-3 py-2.5 font-bold text-white" type="button" @click="saveEnvironment">Save environment</button>
-          </div>
-          <p v-if="environmentError" class="mt-0 text-red-700">{{ environmentError }}</p>
+          <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="openEnvironment()">
+            New environment
+          </button>
         </div>
-      </div>
-    </section>
+        <div class="grid gap-4 sm:grid-cols-[minmax(10rem,1fr)_2fr]">
+          <div class="grid gap-2">
+            <button v-for="environment in environments" :key="environment.id" class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 text-left text-slate-700" type="button" @click="openEnvironment(environment)">
+              {{ environment.name }}
+            </button>
+          </div>
+          <div>
+            <label class="mt-4 grid gap-2 font-semibold text-slate-700">
+              Name
+              <input v-model="environmentName" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" placeholder="Production">
+            </label>
+            <div v-for="(entry, index) in environmentEntries" :key="index" class="mt-3 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
+              <input v-model="entry.key" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="Variable name" placeholder="API_URL">
+              <input v-model="entry.value" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" :type="entry.secret ? 'password' : 'text'" aria-label="Variable value" placeholder="Value">
+              <label class="m-0 mt-0 flex items-center whitespace-nowrap font-semibold text-slate-700"><input v-model="entry.secret" class="w-auto" type="checkbox"> Secret</label>
+            </div>
+            <div class="mt-4 flex gap-2">
+              <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="addEnvironmentEntry">
+                Add variable
+              </button>
+              <button class="cursor-pointer rounded-md border border-indigo-600 bg-indigo-600 px-3 py-2.5 font-bold text-white" type="button" @click="saveEnvironment">
+                Save environment
+              </button>
+            </div>
+            <p v-if="environmentError" class="mt-0 text-red-700">
+              {{ environmentError }}
+            </p>
+          </div>
+        </div>
+      </section>
 
-    <section class="rounded-xl border border-slate-300 bg-white p-6 shadow-[0_8px_30px_rgb(15_23_42_/_8%)]">
-      <div class="grid gap-4 sm:flex sm:items-center">
-        <select v-model="method" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="HTTP method">
-          <option>GET</option>
-          <option>POST</option>
-          <option>PUT</option>
-          <option>PATCH</option>
-          <option>DELETE</option>
-          <option>HEAD</option>
-        </select>
-        <input v-model="url" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit sm:flex-1" aria-label="Request URL" placeholder="https://api.example.com/v1/resources" required @keyup.enter="sendRequest">
-        <button class="cursor-pointer rounded-md border border-indigo-600 bg-indigo-600 px-3 py-2.5 font-bold text-white disabled:cursor-wait disabled:opacity-70" type="button" :disabled="sending" @click="sendRequest">{{ sending ? 'Sending...' : 'Send' }}</button>
-        <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="saveRequest">Save</button>
-      </div>
-
-      <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-        Environment
-        <select v-model="environmentId" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
-          <option :value="undefined">No environment</option>
-          <option v-for="environment in environments" :key="environment.id" :value="environment.id">
-            {{ environment.name }}
-          </option>
-        </select>
-      </label>
-      <label v-if="selectedCollection" class="mt-4 grid gap-2 font-semibold text-slate-700">
-        Folder
-        <select v-model="selectedFolderId" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
-          <option :value="undefined">No folder</option>
-          <option v-for="folder in selectedContents.folders" :key="folder.id" :value="folder.id">{{ folder.name }}</option>
-        </select>
-      </label>
-      <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-        Authentication
-        <select v-model="authType" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
-          <option value="none">None</option>
-          <option value="bearer">Bearer token</option>
-          <option value="basic">Basic auth</option>
-        </select>
-      </label>
-      <label v-if="authType === 'bearer'" class="mt-4 grid gap-2 font-semibold text-slate-700">
-        Bearer token
-        <input v-model="bearerToken" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" type="password" placeholder="{{ACCESS_TOKEN}}">
-      </label>
-      <div v-if="authType === 'basic'" class="grid gap-4 sm:grid-cols-2">
-        <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-          Username
-          <input v-model="authUsername" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" autocomplete="username">
-        </label>
-        <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-          Password
-          <input v-model="authPassword" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" type="password" autocomplete="current-password">
-        </label>
-      </div>
-
-      <div class="grid gap-4 sm:grid-cols-2">
-        <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-          Headers (JSON)
-          <textarea v-model="headers" class="box-border min-h-52 w-full resize-y rounded-md border border-slate-300 px-3 py-2.5 font-mono text-sm" spellcheck="false" />
-        </label>
-        <label v-if="bodyMode === 'raw'" class="mt-4 grid gap-2 font-semibold text-slate-700">
-          Body type
-          <select v-model="bodyMode" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
-            <option value="raw">Raw body</option>
-            <option value="form-data">Multipart form-data</option>
+      <section class="rounded-xl border border-slate-300 bg-white p-6 shadow-[0_8px_30px_rgb(15_23_42_/_8%)]">
+        <div class="grid gap-4 sm:flex sm:items-center">
+          <select v-model="method" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="HTTP method">
+            <option>GET</option>
+            <option>POST</option>
+            <option>PUT</option>
+            <option>PATCH</option>
+            <option>DELETE</option>
+            <option>HEAD</option>
           </select>
-          Body
-          <textarea v-model="body" class="box-border min-h-52 w-full resize-y rounded-md border border-slate-300 px-3 py-2.5 font-mono text-sm" spellcheck="false" placeholder="{&quot;example&quot;: true}" />
+          <input v-model="url" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit sm:flex-1" aria-label="Request URL" placeholder="https://api.example.com/v1/resources" required @keyup.enter="sendRequest">
+          <button class="cursor-pointer rounded-md border border-indigo-600 bg-indigo-600 px-3 py-2.5 font-bold text-white disabled:cursor-wait disabled:opacity-70" type="button" :disabled="sending" @click="sendRequest">
+            {{ sending ? 'Sending...' : 'Send' }}
+          </button>
+          <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="saveRequest">
+            Save
+          </button>
+        </div>
+
+        <label class="mt-4 grid gap-2 font-semibold text-slate-700">
+          Environment
+          <select v-model="environmentId" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
+            <option :value="undefined">No environment</option>
+            <option v-for="environment in environments" :key="environment.id" :value="environment.id">
+              {{ environment.name }}
+            </option>
+          </select>
         </label>
-        <div v-else class="mt-4 grid gap-3">
-          <label class="grid gap-2 font-semibold text-slate-700">
+        <label v-if="selectedCollection" class="mt-4 grid gap-2 font-semibold text-slate-700">
+          Folder
+          <select v-model="selectedFolderId" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
+            <option :value="undefined">No folder</option>
+            <option v-for="folder in selectedContents.folders" :key="folder.id" :value="folder.id">{{ folder.name }}</option>
+          </select>
+        </label>
+        <label class="mt-4 grid gap-2 font-semibold text-slate-700">
+          Authentication
+          <select v-model="authType" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
+            <option value="none">None</option>
+            <option value="bearer">Bearer token</option>
+            <option value="basic">Basic auth</option>
+          </select>
+        </label>
+        <label v-if="authType === 'bearer'" class="mt-4 grid gap-2 font-semibold text-slate-700">
+          Bearer token
+          <input v-model="bearerToken" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" type="password" placeholder="{{ACCESS_TOKEN}}">
+        </label>
+        <div v-if="authType === 'basic'" class="grid gap-4 sm:grid-cols-2">
+          <label class="mt-4 grid gap-2 font-semibold text-slate-700">
+            Username
+            <input v-model="authUsername" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" autocomplete="username">
+          </label>
+          <label class="mt-4 grid gap-2 font-semibold text-slate-700">
+            Password
+            <input v-model="authPassword" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" type="password" autocomplete="current-password">
+          </label>
+        </div>
+
+        <div class="grid gap-4 sm:grid-cols-2">
+          <label class="mt-4 grid gap-2 font-semibold text-slate-700">
+            Headers (JSON)
+            <textarea v-model="headers" class="box-border min-h-52 w-full resize-y rounded-md border border-slate-300 px-3 py-2.5 font-mono text-sm" spellcheck="false" />
+          </label>
+          <label v-if="bodyMode === 'raw'" class="mt-4 grid gap-2 font-semibold text-slate-700">
             Body type
             <select v-model="bodyMode" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
               <option value="raw">Raw body</option>
               <option value="form-data">Multipart form-data</option>
             </select>
+            Body
+            <textarea v-model="body" class="box-border min-h-52 w-full resize-y rounded-md border border-slate-300 px-3 py-2.5 font-mono text-sm" spellcheck="false" placeholder="{&quot;example&quot;: true}" />
           </label>
-          <div v-for="(field, index) in formFields" :key="index" class="grid gap-4 sm:grid-cols-2">
-            <input v-model="field.key" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="Form field name" placeholder="Field name">
-            <input v-model="field.value" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="Form field value" placeholder="Value">
+          <div v-else class="mt-4 grid gap-3">
+            <label class="grid gap-2 font-semibold text-slate-700">
+              Body type
+              <select v-model="bodyMode" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
+                <option value="raw">Raw body</option>
+                <option value="form-data">Multipart form-data</option>
+              </select>
+            </label>
+            <div v-for="(field, index) in formFields" :key="index" class="grid gap-4 sm:grid-cols-2">
+              <input v-model="field.key" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="Form field name" placeholder="Field name">
+              <input v-model="field.value" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="Form field value" placeholder="Value">
+            </div>
+            <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="addFormField">
+              Add form field
+            </button>
+            <label class="grid gap-2 font-semibold text-slate-700">
+              File field name
+              <input v-model="fileFieldName" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" placeholder="file">
+            </label>
+            <label class="grid gap-2 font-semibold text-slate-700">
+              Files
+              <input class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" type="file" multiple @change="setAttachedFiles">
+            </label>
+            <p v-if="attachedFiles.length" class="mt-0 text-slate-500">
+              {{ attachedFiles.length }} file(s) ready to upload.
+            </p>
           </div>
-          <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="addFormField">Add form field</button>
-          <label class="grid gap-2 font-semibold text-slate-700">
-            File field name
-            <input v-model="fileFieldName" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" placeholder="file">
-          </label>
-          <label class="grid gap-2 font-semibold text-slate-700">
-            Files
-            <input class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" type="file" multiple @change="setAttachedFiles">
-          </label>
-          <p v-if="attachedFiles.length" class="mt-0 text-slate-500">{{ attachedFiles.length }} file(s) ready to upload.</p>
         </div>
-      </div>
-      <p v-if="requestError" class="mt-0 text-red-700">{{ requestError }}</p>
-    </section>
+        <p v-if="requestError" class="mt-0 text-red-700">
+          {{ requestError }}
+        </p>
+      </section>
 
-    <ResponsePanel v-if="result" :result="result" :body="displayedResponseBody" :search="responseSearch" @update:search="responseSearch = $event" />
-  </main>
+      <ResponsePanel v-if="result" :result="result" :body="displayedResponseBody" :search="responseSearch" @update:search="responseSearch = $event" />
+    </div>
+  </WorkspaceShell>
 </template>

@@ -50,6 +50,7 @@ interface SendRequest {
   body?: string
   formFields?: FormField[]
   auth?: RequestAuth
+  collectionId?: number
   environmentId?: number
 }
 
@@ -96,6 +97,7 @@ interface StoredCollection {
   executionMode: 'browser' | 'backend'
   requests: StoredRequest[]
   folders?: StoredFolder[]
+  variables?: Record<string, string>
 }
 
 interface RequestHistoryInput {
@@ -291,6 +293,7 @@ function parseStoredCollection(contents: string): StoredCollection | undefined {
           executionMode: collection.executionMode === 'browser' ? 'browser' : 'backend',
           requests: collection.requests,
           folders: Array.isArray(collection.folders) ? collection.folders : [],
+          variables: isStringRecord(collection.variables) ? collection.variables : {},
         }
       : undefined
   }
@@ -630,6 +633,20 @@ async function sendRequest(c: Context, body: SendRequest, uploadedFiles: Uploade
   }
 
   let variables: Record<string, string> = {}
+  if (body.collectionId !== undefined) {
+    if (!Number.isSafeInteger(body.collectionId)) {
+      return c.json({ error: 'collectionId must be an integer' }, 400)
+    }
+    const collection = getCollection(body.collectionId)
+    if (!collection) {
+      return c.json({ error: 'Collection not found' }, 404)
+    }
+    const contents = parseStoredCollection(collection.contents)
+    if (!contents) {
+      return c.json({ error: 'Collection contents are invalid' }, 500)
+    }
+    variables = contents.variables ?? {}
+  }
   if (body.environmentId !== undefined) {
     if (!Number.isSafeInteger(body.environmentId)) {
       return c.json({ error: 'environmentId must be an integer' }, 400)
@@ -642,7 +659,7 @@ async function sendRequest(c: Context, body: SendRequest, uploadedFiles: Uploade
     if (!isStringRecord(parsedValues)) {
       return c.json({ error: 'Environment values are invalid' }, 500)
     }
-    variables = parsedValues
+    variables = { ...variables, ...parsedValues }
   }
 
   const method = body.method.toUpperCase()

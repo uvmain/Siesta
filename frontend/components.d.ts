@@ -11,9 +11,18 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
-    CollectionManager: typeof import('./src/components/CollectionManager.vue')['default']
+    CollectionTree: typeof import('./src/components/CollectionTree.vue')['default']
     ResponsePanel: typeof import('./src/components/ResponsePanel.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    UiButton: typeof import('./src/components/UiButton.vue')['default']
+    UiDialog: typeof import('./src/components/UiDialog.vue')['default']
+    UiIconButton: typeof import('./src/components/UiIconButton.vue')['default']
+    UiMenu: typeof import('./src/components/UiMenu.vue')['default']
+    UiState: typeof import('./src/components/UiState.vue')['default']
+    UiTabs: typeof import('./src/components/UiTabs.vue')['default']
+    UiToastRegion: typeof import('./src/components/UiToastRegion.vue')['default']
+    UiTooltip: typeof import('./src/components/UiTooltip.vue')['default']
+    WorkspaceShell: typeof import('./src/components/WorkspaceShell.vue')['default']
   }
 }

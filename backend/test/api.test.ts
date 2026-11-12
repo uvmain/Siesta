@@ -57,7 +57,12 @@ test('persists collections and exposes them through backups', async () => {
     headers: { 'Content-Type': 'application/json', 'Cookie': sessionCookie },
     body: JSON.stringify({
       name: 'Test collection',
-      contents: { executionMode: 'backend', folders: [], requests: [] },
+      contents: {
+        executionMode: 'backend',
+        folders: [],
+        requests: [],
+        variables: { BASE_URL: 'https://api.example.test' },
+      },
     }),
   })
 
@@ -67,9 +72,15 @@ test('persists collections and exposes them through backups', async () => {
     headers: { Cookie: sessionCookie },
   })
   assert.equal(backupResponse.status, 200)
-  const backup = await backupResponse.json() as { version: number, collections: Array<{ name: string }> }
+  const backup = await backupResponse.json() as { version: number, collections: Array<{ name: string, contents: string }> }
   assert.equal(backup.version, 1)
   assert.equal(backup.collections[0].name, 'Test collection')
+  assert.deepEqual(JSON.parse(backup.collections[0].contents), {
+    executionMode: 'backend',
+    folders: [],
+    requests: [],
+    variables: { BASE_URL: 'https://api.example.test' },
+  })
 })
 
 test('rejects invalid backend request URLs', async () => {
