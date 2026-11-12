@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import type { Collection, Environment, FormField, RequestAuth, RequestHistory, RequestResult } from '~/logic/api'
-import type { AuthType, BodyMode, CollectionContents, EnvironmentEntry, StoredFolder, StoredRequest } from '~/types/workspace'
+import type { BodyMode, CollectionContents, CollectionOverview, EnvironmentEntry, RequestEntry, StoredFolder, StoredRequest } from '~/types/workspace'
 import { api } from '~/logic/api'
-import { useWorkspaceState } from '~/logic/workspace-state'
+import { applyRequestAuth } from '~/logic/request-auth'
+import { headersFromEntries, parseHeaderEntries, syncQueryEntries, urlWithQueryEntries } from '~/logic/request-entries'
+import { createRequestDraft, useWorkspaceState } from '~/logic/workspace-state'
 
 const router = useRouter()
-const { preferences, session, updatePreferences, saveDraft } = useWorkspaceState()
+const { preferences, session, updatePreferences, saveDraft, createRequestTab, activateRequestTab, updateRequestTab, closeRequestTab } = useWorkspaceState()
 const environments = ref<Environment[]>([])
 const editingEnvironmentId = ref<number | undefined>()
 const environmentName = ref('')
@@ -15,26 +17,18 @@ const collections = ref<Collection[]>([])
 const environmentId = ref<number | undefined>(preferences.value.activeEnvironmentId)
 const selectedCollectionId = ref<number | undefined>(preferences.value.selectedCollectionId)
 const selectedFolderId = ref<string | undefined>()
-const activeDraft = session.value.drafts[session.value.activeRequestTabId] ?? {
-  method: 'GET',
-  url: 'https://httpbin.org/get',
-  headers: '{\n  "Accept": "application/json"\n}',
-  body: '',
-  bodyMode: 'raw' as BodyMode,
-  formFields: [{ key: '', value: '' }],
-}
+const activeDraft = session.value.drafts[session.value.activeRequestTabId] ?? createRequestDraft()
 const method = ref(activeDraft.method)
 const url = ref(activeDraft.url)
 const headers = ref(activeDraft.headers)
+const headerEntries = ref<RequestEntry[] | undefined>(activeDraft.headerEntries ?? parseHeaderEntries(activeDraft.headers))
+const params = ref<RequestEntry[]>(syncQueryEntries(activeDraft.url, activeDraft.params ?? []))
 const body = ref(activeDraft.body)
 const bodyMode = ref<BodyMode>(activeDraft.bodyMode)
 const formFields = ref<FormField[]>(activeDraft.formFields)
 const fileFieldName = ref('file')
 const attachedFiles = ref<File[]>([])
-const authType = ref<AuthType>('none')
-const bearerToken = ref('')
-const authUsername = ref('')
-const authPassword = ref('')
+const requestAuth = ref<RequestAuth>({ type: 'none' })
 const sending = ref(false)
 const requestError = ref('')
 const result = ref<RequestResult>()
@@ -42,6 +36,10 @@ const collectionError = ref('')
 const importing = ref(false)
 const history = ref<RequestHistory[]>([])
 const responseSearch = ref('')
+const restoringDraft = ref(false)
+const tabAuth = ref<Record<string, RequestAuth>>({})
+const closingTabId = ref<string>()
+let updatingQuery = false
 
 async function loadEnvironments(): Promise<void> {
   environments.value = await api.listEnvironments()
@@ -100,7 +98,15 @@ async function loadCollections(): Promise<void> {
 }
 
 function defaultContents(): CollectionContents {
-  return { executionMode: 'backend', requests: [], folders: [], variables: {} }
+  return {
+    executionMode: 'backend',
+    requests: [],
+    folders: [],
+    description: '',
+    variables: {},
+    auth: { type: 'none' },
+    scripts: { preRequest: '', tests: '' },
+  }
 }
 
 function collectionContents(collection: Collection): CollectionContents {
@@ -110,9 +116,17 @@ function collectionContents(collection: Collection): CollectionContents {
       executionMode: contents.executionMode === 'backend' ? 'backend' : 'browser',
       requests: Array.isArray(contents.requests) ? contents.requests : [],
       folders: Array.isArray(contents.folders) ? contents.folders : [],
+      description: typeof contents.description === 'string' ? contents.description : '',
       variables: contents.variables && typeof contents.variables === 'object' && !Array.isArray(contents.variables) && Object.values(contents.variables).every(value => typeof value === 'string')
         ? contents.variables as Record<string, string>
         : {},
+      auth: contents.auth && typeof contents.auth === 'object' && !Array.isArray(contents.auth) && ['none', 'bearer', 'basic', 'api-key', 'oauth2'].includes((contents.auth as RequestAuth).type)
+        ? contents.auth as RequestAuth
+        : { type: 'none' },
+      scripts: contents.scripts && typeof contents.scripts === 'object' && !Array.isArray(contents.scripts)
+        && typeof contents.scripts.preRequest === 'string' && typeof contents.scripts.tests === 'string'
+        ? contents.scripts
+        : { preRequest: '', tests: '' },
     }
   }
   catch {
@@ -151,23 +165,25 @@ function resolveBrowserVariables(value: string): string {
 }
 
 function currentAuth(): RequestAuth {
-  if (authType.value === 'bearer') {
-    return { type: 'bearer', token: bearerToken.value }
-  }
-  if (authType.value === 'basic') {
-    return { type: 'basic', username: authUsername.value, password: authPassword.value }
-  }
-  return { type: 'none' }
+  return { ...requestAuth.value }
 }
 
-function browserAuthorization(auth: RequestAuth): string | undefined {
-  if (auth.type === 'bearer') {
-    return auth.token ? `Bearer ${resolveBrowserVariables(auth.token)}` : undefined
+function effectiveAuth(): RequestAuth {
+  const auth = currentAuth()
+  return auth.type === 'none' ? selectedContents.value.auth : auth
+}
+
+async function saveCollectionOverview(overview: CollectionOverview): Promise<void> {
+  if (!selectedCollection.value) {
+    return
   }
-  if (auth.type === 'basic' && auth.username !== undefined && auth.password !== undefined) {
-    return `Basic ${btoa(`${resolveBrowserVariables(auth.username)}:${resolveBrowserVariables(auth.password)}`)}`
+  collectionError.value = ''
+  try {
+    await saveCollection(selectedCollection.value, { ...selectedContents.value, ...overview })
   }
-  return undefined
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Unable to save collection overview'
+  }
 }
 
 function makeBrowserFormData(): FormData {
@@ -187,6 +203,117 @@ function addFormField(): void {
 
 function setAttachedFiles(event: Event): void {
   attachedFiles.value = Array.from((event.target as HTMLInputElement).files ?? [])
+}
+
+function currentDraft() {
+  return {
+    method: method.value,
+    url: url.value,
+    headers: headers.value,
+    headerEntries: headerEntries.value,
+    params: params.value,
+    body: body.value,
+    bodyMode: bodyMode.value,
+    formFields: formFields.value,
+    ...(selectedFolderId.value ? { folderId: selectedFolderId.value } : {}),
+  }
+}
+
+function requestTabTitle(): string {
+  if (!url.value.trim()) {
+    return 'Untitled request'
+  }
+  try {
+    const parsed = new URL(url.value)
+    return `${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}` || 'Untitled request'
+  }
+  catch {
+    return url.value
+  }
+}
+
+function applyActiveDraft(): void {
+  const draft = session.value.drafts[session.value.activeRequestTabId] ?? createRequestDraft()
+  const auth = tabAuth.value[session.value.activeRequestTabId] ?? { type: 'none' }
+  restoringDraft.value = true
+  method.value = draft.method
+  url.value = draft.url
+  headers.value = draft.headers
+  headerEntries.value = draft.headerEntries?.map(entry => ({ ...entry })) ?? parseHeaderEntries(draft.headers)
+  params.value = syncQueryEntries(draft.url, draft.params ?? [])
+  body.value = draft.body
+  bodyMode.value = draft.bodyMode
+  formFields.value = draft.formFields.map(field => ({ ...field }))
+  selectedFolderId.value = draft.folderId
+  requestAuth.value = { ...auth }
+  attachedFiles.value = []
+  requestError.value = ''
+  result.value = undefined
+  restoringDraft.value = false
+}
+
+function updateParams(entries: RequestEntry[]): void {
+  updatingQuery = true
+  try {
+    params.value = entries
+    url.value = urlWithQueryEntries(url.value, entries)
+  }
+  finally {
+    updatingQuery = false
+  }
+}
+
+function updateHeaderEntries(entries: RequestEntry[] | undefined): void {
+  headerEntries.value = entries
+  if (entries) {
+    try {
+      headers.value = JSON.stringify(headersFromEntries(entries), null, 2)
+    }
+    catch {
+      // Keep the last valid JSON while an incomplete table row is being edited.
+    }
+  }
+}
+
+function requestHeaders(): Record<string, string> {
+  if (headerEntries.value) {
+    return headersFromEntries(headerEntries.value)
+  }
+  throw new Error('Headers must be a JSON object with string values.')
+}
+
+function selectRequestTab(id: string): void {
+  if (id === session.value.activeRequestTabId) {
+    return
+  }
+  activateRequestTab(id)
+  applyActiveDraft()
+}
+
+function finishCloseTab(id: string): void {
+  const activeTabId = session.value.activeRequestTabId
+  closeRequestTab(id)
+  delete tabAuth.value[id]
+  if (activeTabId === id) {
+    applyActiveDraft()
+  }
+}
+
+function requestCloseTab(id: string): void {
+  const tab = session.value.openRequestTabs.find(item => item.id === id)
+  if (tab?.dirty) {
+    closingTabId.value = id
+    return
+  }
+  finishCloseTab(id)
+}
+
+function discardAndCloseTab(): void {
+  if (!closingTabId.value) {
+    return
+  }
+  finishCloseTab(closingTabId.value)
+  closingTabId.value = undefined
 }
 
 async function saveCollection(collection: Collection, contents: CollectionContents): Promise<void> {
@@ -334,10 +461,11 @@ async function saveRequest(): Promise<void> {
   collectionError.value = ''
   let parsedHeaders: Record<string, string>
   try {
-    parsedHeaders = JSON.parse(headers.value) as Record<string, string>
+    parsedHeaders = requestHeaders()
   }
-  catch {
-    collectionError.value = 'Headers must be valid JSON before saving.'
+  catch (error) {
+    collectionError.value = error instanceof Error ? error.message : 'Headers are invalid.'
+    requestError.value = collectionError.value
     return
   }
   const request: StoredRequest = {
@@ -346,6 +474,8 @@ async function saveRequest(): Promise<void> {
     method: method.value,
     url: url.value,
     headers: parsedHeaders,
+    headerEntries: headerEntries.value?.map(entry => ({ ...entry })),
+    params: params.value.map(entry => ({ ...entry })),
     body: body.value,
     bodyMode: bodyMode.value,
     formFields: formFields.value.filter(field => field.key),
@@ -357,6 +487,8 @@ async function saveRequest(): Promise<void> {
       ...selectedContents.value,
       requests: [...selectedContents.value.requests, request],
     })
+    saveDraft(session.value.activeRequestTabId, currentDraft(), false)
+    updateRequestTab(session.value.activeRequestTabId, { title: request.name, dirty: false })
   }
   catch (error) {
     collectionError.value = error instanceof Error ? error.message : 'Unable to save request'
@@ -364,17 +496,19 @@ async function saveRequest(): Promise<void> {
 }
 
 function openRequest(request: StoredRequest): void {
-  method.value = request.method
-  url.value = request.url
-  headers.value = JSON.stringify(request.headers, null, 2)
-  body.value = request.body
-  bodyMode.value = request.bodyMode ?? 'raw'
-  formFields.value = request.formFields?.length ? request.formFields : [{ key: '', value: '' }]
-  authType.value = request.auth?.type ?? 'none'
-  bearerToken.value = request.auth?.token ?? ''
-  authUsername.value = request.auth?.username ?? ''
-  authPassword.value = request.auth?.password ?? ''
-  selectedFolderId.value = request.folderId
+  const id = createRequestTab({
+    method: request.method,
+    url: request.url,
+    headers: JSON.stringify(request.headers, null, 2),
+    headerEntries: request.headerEntries?.map(entry => ({ ...entry })),
+    params: request.params?.map(entry => ({ ...entry })),
+    body: request.body,
+    bodyMode: request.bodyMode ?? 'raw',
+    formFields: request.formFields?.length ? request.formFields : [{ key: '', value: '' }],
+    ...(request.folderId ? { folderId: request.folderId } : {}),
+  }, request.name)
+  tabAuth.value[id] = request.auth ?? { type: 'none' }
+  applyActiveDraft()
 }
 
 async function loadHistory(): Promise<void> {
@@ -496,20 +630,8 @@ async function logout(): Promise<void> {
 }
 
 function newRequest(): void {
-  method.value = 'GET'
-  url.value = 'https://httpbin.org/get'
-  headers.value = '{\n  "Accept": "application/json"\n}'
-  body.value = ''
-  bodyMode.value = 'raw'
-  formFields.value = [{ key: '', value: '' }]
-  selectedFolderId.value = undefined
-  attachedFiles.value = []
-  authType.value = 'none'
-  bearerToken.value = ''
-  authUsername.value = ''
-  authPassword.value = ''
-  requestError.value = ''
-  result.value = undefined
+  createRequestTab()
+  applyActiveDraft()
 }
 
 async function sendRequest(): Promise<void> {
@@ -517,11 +639,7 @@ async function sendRequest(): Promise<void> {
   result.value = undefined
   let parsedHeaders: Record<string, string>
   try {
-    const parsedHeadersValue: unknown = JSON.parse(headers.value)
-    if (!parsedHeadersValue || typeof parsedHeadersValue !== 'object' || Array.isArray(parsedHeadersValue) || !Object.values(parsedHeadersValue).every(value => typeof value === 'string')) {
-      throw new Error('Headers must be a JSON object with string values')
-    }
-    parsedHeaders = parsedHeadersValue as Record<string, string>
+    parsedHeaders = requestHeaders()
   }
   catch (error) {
     requestError.value = error instanceof Error ? error.message : 'Headers must be valid JSON'
@@ -543,10 +661,8 @@ async function sendRequest(): Promise<void> {
     }
     if (selectedContents.value.executionMode === 'browser') {
       const browserHeaders = Object.fromEntries(Object.entries(parsedHeaders).map(([key, value]) => [resolveBrowserVariables(key), resolveBrowserVariables(value)]))
-      const authorization = browserAuthorization(request.auth)
-      if (authorization && !Object.keys(browserHeaders).some(key => key.toLowerCase() === 'authorization')) {
-        browserHeaders.Authorization = authorization
-      }
+      const browserUrl = new URL(resolveBrowserVariables(url.value))
+      await applyRequestAuth(effectiveAuth(), browserUrl, browserHeaders, resolveBrowserVariables)
       if (bodyMode.value === 'form-data') {
         for (const key of Object.keys(browserHeaders)) {
           if (key.toLowerCase() === 'content-type') {
@@ -554,7 +670,7 @@ async function sendRequest(): Promise<void> {
           }
         }
       }
-      const response = await fetch(resolveBrowserVariables(url.value), {
+      const response = await fetch(browserUrl, {
         method: method.value,
         headers: browserHeaders,
         body: bodyMode.value === 'form-data' ? makeBrowserFormData() : body.value ? resolveBrowserVariables(body.value) : undefined,
@@ -591,17 +707,39 @@ watch([environmentId, selectedCollectionId], () => {
   })
 })
 
-watch([method, url, headers, body, bodyMode, formFields, selectedFolderId], () => {
-  saveDraft(session.value.activeRequestTabId, {
-    method: method.value,
-    url: url.value,
-    headers: headers.value,
-    body: body.value,
-    bodyMode: bodyMode.value,
-    formFields: formFields.value,
-    folderId: selectedFolderId.value,
-  })
-}, { deep: true })
+watch(url, (value) => {
+  if (!restoringDraft.value && !updatingQuery) {
+    params.value = syncQueryEntries(value, params.value)
+  }
+}, { flush: 'sync' })
+
+watch(headers, (value) => {
+  if (!restoringDraft.value && !headerEntries.value) {
+    headerEntries.value = parseHeaderEntries(value)
+  }
+}, { flush: 'sync' })
+
+watch([method, url, headers, headerEntries, params, body, bodyMode, formFields, selectedFolderId], () => {
+  if (restoringDraft.value) {
+    return
+  }
+  const activeTabId = session.value.activeRequestTabId
+  saveDraft(activeTabId, currentDraft())
+  updateRequestTab(activeTabId, { title: requestTabTitle(), dirty: true })
+}, { deep: true, flush: 'sync' })
+
+watch(requestAuth, () => {
+  if (restoringDraft.value) {
+    return
+  }
+  const activeTabId = session.value.activeRequestTabId
+  tabAuth.value[activeTabId] = currentAuth()
+  updateRequestTab(activeTabId, { dirty: true })
+}, { deep: true, flush: 'sync' })
+
+watch(() => session.value.activeRequestTabId, () => {
+  applyActiveDraft()
+})
 
 const displayedResponseBody = computed(() => {
   if (!result.value || !responseSearch.value.trim()) {
@@ -642,6 +780,12 @@ onMounted(checkSession)
       </p>
     </template>
     <div class="box-border grid min-w-0 gap-6 p-4 sm:p-6">
+      <CollectionOverview
+        :collection-id="selectedCollection?.id"
+        :collection-name="selectedCollection?.name"
+        :contents="selectedContents"
+        @save="saveCollectionOverview"
+      />
       <section class="rounded-xl border border-slate-300 bg-white p-6 shadow-[0_8px_30px_rgb(15_23_42_/_8%)]">
         <div class="flex items-center justify-between gap-4">
           <div>
@@ -687,112 +831,56 @@ onMounted(checkSession)
         </div>
       </section>
 
-      <section class="rounded-xl border border-slate-300 bg-white p-6 shadow-[0_8px_30px_rgb(15_23_42_/_8%)]">
-        <div class="grid gap-4 sm:flex sm:items-center">
-          <select v-model="method" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="HTTP method">
-            <option>GET</option>
-            <option>POST</option>
-            <option>PUT</option>
-            <option>PATCH</option>
-            <option>DELETE</option>
-            <option>HEAD</option>
-          </select>
-          <input v-model="url" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit sm:flex-1" aria-label="Request URL" placeholder="https://api.example.com/v1/resources" required @keyup.enter="sendRequest">
-          <button class="cursor-pointer rounded-md border border-indigo-600 bg-indigo-600 px-3 py-2.5 font-bold text-white disabled:cursor-wait disabled:opacity-70" type="button" :disabled="sending" @click="sendRequest">
-            {{ sending ? 'Sending...' : 'Send' }}
-          </button>
-          <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="saveRequest">
-            Save
-          </button>
-        </div>
-
-        <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-          Environment
-          <select v-model="environmentId" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
-            <option :value="undefined">No environment</option>
-            <option v-for="environment in environments" :key="environment.id" :value="environment.id">
-              {{ environment.name }}
-            </option>
-          </select>
-        </label>
-        <label v-if="selectedCollection" class="mt-4 grid gap-2 font-semibold text-slate-700">
-          Folder
-          <select v-model="selectedFolderId" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
-            <option :value="undefined">No folder</option>
-            <option v-for="folder in selectedContents.folders" :key="folder.id" :value="folder.id">{{ folder.name }}</option>
-          </select>
-        </label>
-        <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-          Authentication
-          <select v-model="authType" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
-            <option value="none">None</option>
-            <option value="bearer">Bearer token</option>
-            <option value="basic">Basic auth</option>
-          </select>
-        </label>
-        <label v-if="authType === 'bearer'" class="mt-4 grid gap-2 font-semibold text-slate-700">
-          Bearer token
-          <input v-model="bearerToken" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" type="password" placeholder="{{ACCESS_TOKEN}}">
-        </label>
-        <div v-if="authType === 'basic'" class="grid gap-4 sm:grid-cols-2">
-          <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-            Username
-            <input v-model="authUsername" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" autocomplete="username">
-          </label>
-          <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-            Password
-            <input v-model="authPassword" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" type="password" autocomplete="current-password">
-          </label>
-        </div>
-
-        <div class="grid gap-4 sm:grid-cols-2">
-          <label class="mt-4 grid gap-2 font-semibold text-slate-700">
-            Headers (JSON)
-            <textarea v-model="headers" class="box-border min-h-52 w-full resize-y rounded-md border border-slate-300 px-3 py-2.5 font-mono text-sm" spellcheck="false" />
-          </label>
-          <label v-if="bodyMode === 'raw'" class="mt-4 grid gap-2 font-semibold text-slate-700">
-            Body type
-            <select v-model="bodyMode" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
-              <option value="raw">Raw body</option>
-              <option value="form-data">Multipart form-data</option>
-            </select>
-            Body
-            <textarea v-model="body" class="box-border min-h-52 w-full resize-y rounded-md border border-slate-300 px-3 py-2.5 font-mono text-sm" spellcheck="false" placeholder="{&quot;example&quot;: true}" />
-          </label>
-          <div v-else class="mt-4 grid gap-3">
-            <label class="grid gap-2 font-semibold text-slate-700">
-              Body type
-              <select v-model="bodyMode" class="rounded-md border border-slate-300 px-3 py-2.5 font-inherit">
-                <option value="raw">Raw body</option>
-                <option value="form-data">Multipart form-data</option>
-              </select>
-            </label>
-            <div v-for="(field, index) in formFields" :key="index" class="grid gap-4 sm:grid-cols-2">
-              <input v-model="field.key" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="Form field name" placeholder="Field name">
-              <input v-model="field.value" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" aria-label="Form field value" placeholder="Value">
-            </div>
-            <button class="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2.5 font-bold text-slate-700" type="button" @click="addFormField">
-              Add form field
-            </button>
-            <label class="grid gap-2 font-semibold text-slate-700">
-              File field name
-              <input v-model="fileFieldName" class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" placeholder="file">
-            </label>
-            <label class="grid gap-2 font-semibold text-slate-700">
-              Files
-              <input class="box-border w-full rounded-md border border-slate-300 px-3 py-2.5 font-inherit" type="file" multiple @change="setAttachedFiles">
-            </label>
-            <p v-if="attachedFiles.length" class="mt-0 text-slate-500">
-              {{ attachedFiles.length }} file(s) ready to upload.
-            </p>
-          </div>
-        </div>
-        <p v-if="requestError" class="mt-0 text-red-700">
-          {{ requestError }}
-        </p>
-      </section>
+      <RequestWorkspaceTabs
+        :model-value="session.activeRequestTabId"
+        :tabs="session.openRequestTabs"
+        @update:model-value="selectRequestTab"
+        @close="requestCloseTab"
+        @new="newRequest"
+      />
+      <RequestBuilder
+        :key="session.activeRequestTabId"
+        v-model:method="method"
+        v-model:url="url"
+        v-model:environment-id="environmentId"
+        v-model:folder-id="selectedFolderId"
+        v-model:auth="requestAuth"
+        v-model:headers="headers"
+        v-model:body="body"
+        v-model:body-mode="bodyMode"
+        v-model:form-fields="formFields"
+        v-model:file-field-name="fileFieldName"
+        :header-entries="headerEntries"
+        :params="params"
+        :environments="environments"
+        :folders="selectedContents.folders"
+        :has-collection="Boolean(selectedCollection)"
+        :sending="sending"
+        :error="requestError"
+        :attached-file-count="attachedFiles.length"
+        @send="sendRequest"
+        @save="saveRequest"
+        @new-request="newRequest"
+        @add-form-field="addFormField"
+        @files-changed="setAttachedFiles"
+        @update:header-entries="updateHeaderEntries"
+        @update:params="updateParams"
+      />
 
       <ResponsePanel v-if="result" :result="result" :body="displayedResponseBody" :search="responseSearch" @update:search="responseSearch = $event" />
     </div>
+    <UiDialog :open="Boolean(closingTabId)" title="Discard unsaved request changes?" @close="closingTabId = undefined">
+      <p class="m-0 text-secondary">
+        This request has unsaved changes. Closing it will discard its session draft.
+      </p>
+      <template #footer>
+        <UiButton variant="secondary" @click="closingTabId = undefined">
+          Keep editing
+        </UiButton>
+        <UiButton variant="danger" @click="discardAndCloseTab">
+          Discard changes
+        </UiButton>
+      </template>
+    </UiDialog>
   </WorkspaceShell>
 </template>

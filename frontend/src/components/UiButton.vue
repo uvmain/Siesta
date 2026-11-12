@@ -4,9 +4,11 @@ type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost'
 withDefaults(defineProps<{
   variant?: ButtonVariant
   loading?: boolean
+  disabled?: boolean
 }>(), {
   variant: 'primary',
   loading: false,
+  disabled: false,
 })
 </script>
 
@@ -19,7 +21,7 @@ withDefaults(defineProps<{
       'border-danger bg-danger text-white hover:brightness-110': variant === 'danger',
       'border-transparent bg-transparent text-secondary hover:bg-elevated hover:text-primary': variant === 'ghost',
     }"
-    :disabled="loading || $attrs.disabled !== undefined"
+    :disabled="loading || disabled"
   >
     <span v-if="loading" class="size-3 animate-spin rounded-full border-2 border-current border-r-transparent" aria-hidden="true" />
     <slot />

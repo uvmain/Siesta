@@ -1,3 +1,4 @@
+import type { RequestEntry } from '~/types/workspace'
 import { ref, watch } from 'vue'
 
 export type Theme = 'dark' | 'light'
@@ -13,6 +14,8 @@ export interface RequestDraft {
   method: string
   url: string
   headers: string
+  headerEntries?: RequestEntry[]
+  params?: RequestEntry[]
   body: string
   bodyMode: 'raw' | 'form-data'
   formFields: Array<{ key: string, value: string }>
@@ -53,10 +56,17 @@ const defaultDraft: RequestDraft = {
   formFields: [{ key: '', value: '' }],
 }
 
+export function createRequestDraft(): RequestDraft {
+  return {
+    ...defaultDraft,
+    formFields: defaultDraft.formFields.map(field => ({ ...field })),
+  }
+}
+
 const defaultSession: WorkspaceSession = {
   activeRequestTabId: 'draft',
   openRequestTabs: [{ id: 'draft', title: 'Untitled request', method: 'GET', dirty: false }],
-  drafts: { draft: defaultDraft },
+  drafts: { draft: createRequestDraft() },
 }
 
 function readStorage<T>(storage: Storage, key: string, fallback: T): T {
@@ -69,6 +79,15 @@ function readStorage<T>(storage: Storage, key: string, fallback: T): T {
   }
   catch {
     return fallback
+  }
+}
+
+function copyDraft(draft: RequestDraft): RequestDraft {
+  return {
+    ...draft,
+    formFields: draft.formFields.map(field => ({ ...field })),
+    headerEntries: draft.headerEntries?.map(entry => ({ ...entry })),
+    params: draft.params?.map(entry => ({ ...entry })),
   }
 }
 
@@ -96,10 +115,67 @@ export function useWorkspaceState() {
   function saveDraft(id: string, draft: RequestDraft, dirty = true): void {
     session.value = {
       ...session.value,
-      drafts: { ...session.value.drafts, [id]: draft },
+      drafts: { ...session.value.drafts, [id]: copyDraft(draft) },
       openRequestTabs: session.value.openRequestTabs.map(tab => tab.id === id ? { ...tab, method: draft.method, dirty } : tab),
     }
   }
 
-  return { preferences, session, updatePreferences, saveDraft }
+  function createRequestTab(draft = createRequestDraft(), title = 'Untitled request'): string {
+    const id = crypto.randomUUID()
+    session.value = {
+      activeRequestTabId: id,
+      openRequestTabs: [...session.value.openRequestTabs, { id, title, method: draft.method, dirty: false }],
+      drafts: { ...session.value.drafts, [id]: copyDraft(draft) },
+    }
+    return id
+  }
+
+  function activateRequestTab(id: string): void {
+    if (session.value.openRequestTabs.some(tab => tab.id === id)) {
+      session.value = { ...session.value, activeRequestTabId: id }
+    }
+  }
+
+  function updateRequestTab(id: string, changes: Partial<Pick<RequestTab, 'title' | 'method' | 'dirty'>>): void {
+    session.value = {
+      ...session.value,
+      openRequestTabs: session.value.openRequestTabs.map(tab => tab.id === id ? { ...tab, ...changes } : tab),
+    }
+  }
+
+  function closeRequestTab(id: string): void {
+    const index = session.value.openRequestTabs.findIndex(tab => tab.id === id)
+    if (index < 0) {
+      return
+    }
+    const openRequestTabs = session.value.openRequestTabs.filter(tab => tab.id !== id)
+    const { [id]: _, ...drafts } = session.value.drafts
+    if (!openRequestTabs.length) {
+      const newId = crypto.randomUUID()
+      const draft = createRequestDraft()
+      session.value = {
+        activeRequestTabId: newId,
+        openRequestTabs: [{ id: newId, title: 'Untitled request', method: draft.method, dirty: false }],
+        drafts: { [newId]: draft },
+      }
+      return
+    }
+    const nextTab = openRequestTabs[Math.min(index, openRequestTabs.length - 1)]
+    session.value = {
+      activeRequestTabId: session.value.activeRequestTabId === id ? nextTab.id : session.value.activeRequestTabId,
+      openRequestTabs,
+      drafts,
+    }
+  }
+
+  return {
+    preferences,
+    session,
+    updatePreferences,
+    saveDraft,
+    createRequestTab,
+    activateRequestTab,
+    updateRequestTab,
+    closeRequestTab,
+  }
 }

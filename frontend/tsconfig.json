@@ -5,6 +5,8 @@
     "lib": ["es2023", "esnext", "DOM"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "outDir": "dist",
+    "rootDir": ".",
     "paths": {
       "~/*": ["./src/*"]
     },

@@ -6,10 +6,18 @@ export interface FormField {
 }
 
 export interface RequestAuth {
-  type: 'none' | 'bearer' | 'basic'
+  type: 'none' | 'bearer' | 'basic' | 'api-key' | 'oauth2'
   token?: string
   username?: string
   password?: string
+  key?: string
+  value?: string
+  location?: 'header' | 'query'
+  tokenUrl?: string
+  clientId?: string
+  clientSecret?: string
+  scope?: string
+  clientAuthentication?: 'basic' | 'body'
 }
 
 export interface Environment {

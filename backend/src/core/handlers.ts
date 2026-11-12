@@ -60,10 +60,18 @@ interface FormField {
 }
 
 interface RequestAuth {
-  type: 'none' | 'bearer' | 'basic'
+  type: 'none' | 'bearer' | 'basic' | 'api-key' | 'oauth2'
   token?: string
   username?: string
   password?: string
+  key?: string
+  value?: string
+  location?: 'header' | 'query'
+  tokenUrl?: string
+  clientId?: string
+  clientSecret?: string
+  scope?: string
+  clientAuthentication?: 'basic' | 'body'
 }
 
 interface UploadedFile {
@@ -91,13 +99,22 @@ interface StoredRequest {
 interface StoredFolder {
   id: string
   name: string
+  parentId?: string
+}
+
+interface CollectionScripts {
+  preRequest: string
+  tests: string
 }
 
 interface StoredCollection {
   executionMode: 'browser' | 'backend'
   requests: StoredRequest[]
   folders?: StoredFolder[]
+  description?: string
   variables?: Record<string, string>
+  auth?: RequestAuth
+  scripts?: CollectionScripts
 }
 
 interface RequestHistoryInput {
@@ -157,12 +174,26 @@ function isRequestAuth(value: unknown): value is RequestAuth {
     return false
   }
   const auth = value as RequestAuth
-  if (!['none', 'bearer', 'basic'].includes(auth.type)) {
+  if (!['none', 'bearer', 'basic', 'api-key', 'oauth2'].includes(auth.type)) {
     return false
   }
   return (auth.token === undefined || typeof auth.token === 'string')
     && (auth.username === undefined || typeof auth.username === 'string')
     && (auth.password === undefined || typeof auth.password === 'string')
+    && (auth.key === undefined || typeof auth.key === 'string')
+    && (auth.value === undefined || typeof auth.value === 'string')
+    && (auth.location === undefined || ['header', 'query'].includes(auth.location))
+    && (auth.tokenUrl === undefined || typeof auth.tokenUrl === 'string')
+    && (auth.clientId === undefined || typeof auth.clientId === 'string')
+    && (auth.clientSecret === undefined || typeof auth.clientSecret === 'string')
+    && (auth.scope === undefined || typeof auth.scope === 'string')
+    && (auth.clientAuthentication === undefined || ['basic', 'body'].includes(auth.clientAuthentication))
+}
+
+function isCollectionScripts(value: unknown): value is CollectionScripts {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && typeof (value as CollectionScripts).preRequest === 'string'
+    && typeof (value as CollectionScripts).tests === 'string')
 }
 
 function getId(c: Context): number | undefined {
@@ -293,7 +324,10 @@ function parseStoredCollection(contents: string): StoredCollection | undefined {
           executionMode: collection.executionMode === 'browser' ? 'browser' : 'backend',
           requests: collection.requests,
           folders: Array.isArray(collection.folders) ? collection.folders : [],
+          description: typeof collection.description === 'string' ? collection.description : '',
           variables: isStringRecord(collection.variables) ? collection.variables : {},
+          auth: isRequestAuth(collection.auth) ? collection.auth : { type: 'none' },
+          scripts: isCollectionScripts(collection.scripts) ? collection.scripts : { preRequest: '', tests: '' },
         }
       : undefined
   }
@@ -603,17 +637,84 @@ export function handleDeleteEnvironmentRequest(c: Context): Response {
   return c.body(null, 204)
 }
 
-function getRequestAuthorization(auth: RequestAuth | undefined, variables: Record<string, string>): string | undefined {
+async function applyRequestAuth(auth: RequestAuth | undefined, url: URL, headers: Record<string, string>, variables: Record<string, string>): Promise<void> {
   if (!auth || auth.type === 'none') {
-    return undefined
+    return
+  }
+  const resolve = (value: string) => resolveVariables(value, variables)
+  const hasHeader = (name: string) => Object.keys(headers).some(key => key.toLowerCase() === name.toLowerCase())
+  if (auth.type === 'api-key') {
+    const key = resolve(auth.key ?? '')
+    const value = resolve(auth.value ?? '')
+    if (!key || !value) {
+      throw new Error('API key name and value are required')
+    }
+    if (auth.location === 'query') {
+      if (!url.searchParams.has(key)) {
+        url.searchParams.append(key, value)
+      }
+    }
+    else if (!hasHeader(key)) {
+      headers[key] = value
+    }
+    return
+  }
+  if (hasHeader('authorization')) {
+    return
   }
   if (auth.type === 'bearer') {
-    return auth.token ? `Bearer ${resolveVariables(auth.token, variables)}` : undefined
+    if (auth.token) {
+      headers.Authorization = `Bearer ${resolve(auth.token)}`
+    }
+    return
   }
-  if (auth.username === undefined || auth.password === undefined) {
-    return undefined
+  if (auth.type === 'basic') {
+    if (auth.username !== undefined && auth.password !== undefined) {
+      headers.Authorization = `Basic ${Buffer.from(`${resolve(auth.username)}:${resolve(auth.password)}`).toString('base64')}`
+    }
+    return
   }
-  return `Basic ${Buffer.from(`${resolveVariables(auth.username, variables)}:${resolveVariables(auth.password, variables)}`).toString('base64')}`
+  const clientId = resolve(auth.clientId ?? '')
+  const clientSecret = resolve(auth.clientSecret ?? '')
+  let tokenUrl: URL
+  try {
+    tokenUrl = new URL(resolve(auth.tokenUrl ?? ''))
+    if (!['http:', 'https:'].includes(tokenUrl.protocol) || tokenUrl.username || tokenUrl.password || !clientId || !clientSecret) {
+      throw new Error('Invalid credentials')
+    }
+  }
+  catch {
+    throw new Error('OAuth token URL and client credentials are invalid')
+  }
+  const tokenBody = new URLSearchParams({ grant_type: 'client_credentials' })
+  const scope = resolve(auth.scope ?? '')
+  if (scope) {
+    tokenBody.set('scope', scope)
+  }
+  const tokenHeaders: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' }
+  if (auth.clientAuthentication === 'body') {
+    tokenBody.set('client_id', clientId)
+    tokenBody.set('client_secret', clientSecret)
+  }
+  else {
+    const formEncode = (value: string) => new URLSearchParams({ v: value }).toString().slice(2)
+    tokenHeaders.Authorization = `Basic ${Buffer.from(`${formEncode(clientId)}:${formEncode(clientSecret)}`).toString('base64')}`
+  }
+  try {
+    const response = await fetch(tokenUrl, { method: 'POST', headers: tokenHeaders, body: tokenBody, redirect: 'error', signal: AbortSignal.timeout(30_000) })
+    if (!response.ok) {
+      throw new Error('Token endpoint rejected request')
+    }
+    const data: unknown = await response.json()
+    if (!data || typeof data !== 'object' || !('access_token' in data) || typeof data.access_token !== 'string' || !/^[\w.~+/-]+=*$/.test(data.access_token)
+      || ('token_type' in data && (typeof data.token_type !== 'string' || data.token_type.toLowerCase() !== 'bearer'))) {
+      throw new Error('Invalid token response')
+    }
+    headers.Authorization = `Bearer ${data.access_token}`
+  }
+  catch {
+    throw new Error('OAuth token request failed')
+  }
 }
 
 async function sendRequest(c: Context, body: SendRequest, uploadedFiles: UploadedFile[]): Promise<Response> {
@@ -621,18 +722,8 @@ async function sendRequest(c: Context, body: SendRequest, uploadedFiles: Uploade
     return c.json({ error: 'url, method, headers, and body are invalid' }, 400)
   }
 
-  let url: URL
-  try {
-    url = new URL(body.url)
-  }
-  catch {
-    return c.json({ error: 'url must be an absolute URL' }, 400)
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    return c.json({ error: 'Only HTTP and HTTPS URLs are supported' }, 400)
-  }
-
   let variables: Record<string, string> = {}
+  let collectionAuth: RequestAuth | undefined
   if (body.collectionId !== undefined) {
     if (!Number.isSafeInteger(body.collectionId)) {
       return c.json({ error: 'collectionId must be an integer' }, 400)
@@ -646,6 +737,7 @@ async function sendRequest(c: Context, body: SendRequest, uploadedFiles: Uploade
       return c.json({ error: 'Collection contents are invalid' }, 500)
     }
     variables = contents.variables ?? {}
+    collectionAuth = contents.auth
   }
   if (body.environmentId !== undefined) {
     if (!Number.isSafeInteger(body.environmentId)) {
@@ -662,6 +754,17 @@ async function sendRequest(c: Context, body: SendRequest, uploadedFiles: Uploade
     variables = { ...variables, ...parsedValues }
   }
 
+  let url: URL
+  try {
+    url = new URL(resolveVariables(body.url, variables))
+  }
+  catch {
+    return c.json({ error: 'url must be an absolute URL' }, 400)
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    return c.json({ error: 'Only HTTP and HTTPS URLs are supported' }, 400)
+  }
+
   const method = body.method.toUpperCase()
   if ((method === 'GET' || method === 'HEAD') && (body.body || body.formFields?.length || uploadedFiles.length)) {
     return c.json({ error: `${method} requests cannot include a body` }, 400)
@@ -669,10 +772,7 @@ async function sendRequest(c: Context, body: SendRequest, uploadedFiles: Uploade
 
   try {
     const requestHeaders = Object.fromEntries(Object.entries(body.headers ?? {}).map(([key, value]) => [resolveVariables(key, variables), resolveVariables(value, variables)]))
-    const authorization = getRequestAuthorization(body.auth, variables)
-    if (authorization && !Object.keys(requestHeaders).some(key => key.toLowerCase() === 'authorization')) {
-      requestHeaders.Authorization = authorization
-    }
+    await applyRequestAuth(body.auth?.type === 'none' ? collectionAuth : body.auth ?? collectionAuth, url, requestHeaders, variables)
     let requestBody: string | FormData | undefined
     if (body.formFields || uploadedFiles.length) {
       for (const key of Object.keys(requestHeaders)) {
@@ -692,7 +792,7 @@ async function sendRequest(c: Context, body: SendRequest, uploadedFiles: Uploade
     else {
       requestBody = body.body ? resolveVariables(body.body, variables) : undefined
     }
-    const response = await fetch(resolveVariables(url.toString(), variables), {
+    const response = await fetch(url, {
       method,
       headers: requestHeaders,
       body: requestBody,

@@ -23,6 +23,9 @@
     "build:backend": "pnpm --filter ./backend build",
     "build": "pnpm run clean:dist && pnpm run build:frontend && pnpm run build:backend && node utils/copydist.js",
     "test:backend": "pnpm --filter ./backend test",
+    "test:frontend": "pnpm --filter ./frontend test",
+    "test": "pnpm run test:backend && pnpm run test:frontend",
+    "frontend:type-check": "pnpm --filter ./frontend type-check",
     "lint": "eslint",
     "lint:fix": "eslint --fix"
   },

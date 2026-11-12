@@ -229,7 +229,6 @@ JavaScript
 Form Data
 URL Encoded
 Binary
-Use Monaco Editor or CodeMirror for structured text bodies.
 
 Provide syntax highlighting, formatting, and validation for JSON.
 

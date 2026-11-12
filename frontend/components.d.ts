@@ -11,7 +11,12 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AuthFields: typeof import('./src/components/AuthFields.vue')['default']
+    CollectionOverview: typeof import('./src/components/CollectionOverview.vue')['default']
     CollectionTree: typeof import('./src/components/CollectionTree.vue')['default']
+    RequestBuilder: typeof import('./src/components/RequestBuilder.vue')['default']
+    RequestEntryTable: typeof import('./src/components/RequestEntryTable.vue')['default']
+    RequestWorkspaceTabs: typeof import('./src/components/RequestWorkspaceTabs.vue')['default']
     ResponsePanel: typeof import('./src/components/ResponsePanel.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
