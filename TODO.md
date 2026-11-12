@@ -28,7 +28,8 @@
 - [x] Redesign the request builder with a method/URL action bar and Params, Authorization, Headers, Body, Pre-request Script, Tests, and Settings tabs.
 - [x] Add editable parameter and header tables with enablement, descriptions, variable interpolation, URL synchronisation, and common-header suggestions.
 - [x] Add API Key and OAuth 2.0 authentication helpers with masked sensitive fields.
-- [ ] Add structured request body modes, URL-encoded fields and binary bodies.
+- [x] Add structured request body modes, URL-encoded fields and binary bodies.
+- [ ] Add JSON syntax highlighting to the request body editor.
 - [ ] Add pre-request scripts, response test scripts, and test-result reporting.
 - [ ] Add request-specific execution settings, including timeout, redirects, and TLS verification.
 - [ ] Redesign the response inspector with metadata, no-response/loading/error states, and Pretty, Raw, Preview, Headers, Cookies, and Test Results tabs.

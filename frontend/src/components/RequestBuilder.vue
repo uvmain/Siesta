@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Environment, FormField, RequestAuth } from '~/logic/api'
 import type { BodyMode, RequestEntry, StoredFolder } from '~/types/workspace'
+import { validateJsonBody } from '~/logic/request-body'
 
 defineProps<{
   environments: Environment[]
@@ -9,6 +10,8 @@ defineProps<{
   sending: boolean
   error: string
   attachedFileCount: number
+  binaryFileName?: string
+  missingMultipartFiles: boolean
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +20,8 @@ const emit = defineEmits<{
   newRequest: []
   addFormField: []
   filesChanged: [event: Event]
+  binaryChanged: [event: Event]
+  clearFiles: []
 }>()
 
 const method = defineModel<string>('method', { required: true })
@@ -31,8 +36,30 @@ const body = defineModel<string>('body', { required: true })
 const bodyMode = defineModel<BodyMode>('bodyMode', { required: true })
 const formFields = defineModel<FormField[]>('formFields', { required: true })
 const fileFieldName = defineModel<string>('fileFieldName', { required: true })
+const urlEncodedFields = defineModel<RequestEntry[]>('urlEncodedFields', { required: true })
 
 const activeTab = ref('params')
+const jsonError = ref('')
+const multipartInput = ref<HTMLInputElement>()
+function clearMultipartFiles(): void {
+  if (multipartInput.value) {
+    multipartInput.value.value = ''
+  }
+  emit('clearFiles')
+}
+function formatJson(): void {
+  try {
+    body.value = JSON.stringify(JSON.parse(body.value), null, 2)
+    jsonError.value = ''
+  }
+  catch {
+    jsonError.value = 'Cannot format invalid JSON. Resolve variable placeholders before formatting.'
+  }
+}
+const jsonValidation = computed(() => bodyMode.value === 'json' && body.value ? validateJsonBody(body.value) : undefined)
+watch(body, () => {
+  jsonError.value = ''
+})
 const tabs = [
   { id: 'params', label: 'Params' },
   { id: 'authorization', label: 'Authorization' },
@@ -101,18 +128,75 @@ const tabs = [
         <label class="grid max-w-sm gap-2 text-sm font-semibold">
           Body type
           <select v-model="bodyMode" class="ui-control">
+            <option value="none">None</option>
             <option value="raw">Raw body</option>
+            <option value="json">JSON</option>
+            <option value="xml">XML</option>
+            <option value="text">Text</option>
+            <option value="html">HTML</option>
+            <option value="javascript">JavaScript</option>
             <option value="form-data">Multipart form-data</option>
+            <option value="urlencoded">URL encoded</option>
+            <option value="binary">Binary</option>
           </select>
         </label>
-        <label v-show="bodyMode === 'raw'" class="grid gap-2 text-sm font-semibold">
+        <label v-show="['raw', 'json', 'xml', 'text', 'html', 'javascript'].includes(bodyMode)" class="grid gap-2 text-sm font-semibold">
           Body
           <textarea v-model="body" class="ui-control min-h-52 resize-y font-code" spellcheck="false" placeholder="{&quot;example&quot;: true}" />
         </label>
+        <template v-if="bodyMode === 'json'">
+          <button class="focus-ring w-fit rounded-md border border-border bg-elevated px-3 py-2 text-sm font-semibold" type="button" @click="formatJson">
+            Format JSON
+          </button>
+          <p v-if="jsonError || jsonValidation" class="m-0 text-sm text-danger" role="status">
+            {{ jsonError || `${jsonValidation} Variable placeholders are resolved when sending.` }}
+          </p>
+        </template>
+        <div v-if="bodyMode === 'urlencoded'" class="grid gap-3">
+          <p class="m-0 text-sm text-secondary">
+            Enabled fields are encoded after variable substitution.
+          </p>
+          <RequestEntryTable v-model="urlEncodedFields" kind="form field" />
+        </div>
+        <div v-if="bodyMode === 'binary'" class="grid gap-3">
+          <label class="grid gap-2 text-sm font-semibold">
+            Binary file
+            <input class="ui-control" type="file" @change="emit('binaryChanged', $event)">
+          </label>
+          <p class="m-0 text-sm text-secondary">
+            {{ binaryFileName ? `Selected: ${binaryFileName}` : 'Select a file before sending.' }} Files are not saved and must be reselected after reloading.
+          </p>
+        </div>
         <div v-show="bodyMode === 'form-data'" class="grid gap-3">
-          <div v-for="(field, index) in formFields" :key="index" class="grid gap-2 sm:grid-cols-2">
-            <input v-model="field.key" class="ui-control" aria-label="Form field name" placeholder="Field name">
-            <input v-model="field.value" class="ui-control" aria-label="Form field value" placeholder="Value">
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[30rem] border-collapse text-left text-sm">
+              <thead class="text-secondary">
+                <tr>
+                  <th class="p-2">
+                    Key
+                  </th><th class="p-2">
+                    Value
+                  </th><th class="p-2">
+                    <span class="sr-only">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(field, index) in formFields" :key="index" class="border-t border-border">
+                  <td class="p-1">
+                    <input v-model="field.key" class="ui-control box-border w-full" :aria-label="`Form field name ${index + 1}`" placeholder="Field name">
+                  </td>
+                  <td class="p-1">
+                    <input v-model="field.value" class="ui-control box-border w-full" :aria-label="`Form field value ${index + 1}`" placeholder="Value">
+                  </td>
+                  <td class="p-1">
+                    <UiIconButton :label="`Remove form field ${index + 1}`" type="button" @click="formFields = formFields.filter((_, i) => i !== index)">
+                      ×
+                    </UiIconButton>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
           <button class="focus-ring w-fit rounded-md border border-border bg-elevated px-3 py-2 text-sm font-semibold" type="button" @click="emit('addFormField')">
             Add form field
@@ -123,10 +207,19 @@ const tabs = [
           </label>
           <label class="grid gap-2 text-sm font-semibold">
             Files
-            <input class="ui-control" type="file" multiple @change="emit('filesChanged', $event)">
+            <input ref="multipartInput" class="ui-control" type="file" multiple @change="emit('filesChanged', $event)">
           </label>
           <p v-if="attachedFileCount" class="m-0 text-sm text-secondary">
             {{ attachedFileCount }} file(s) ready to upload.
+          </p>
+          <p v-if="missingMultipartFiles" class="m-0 text-sm text-danger" role="status">
+            Reselect the saved files or clear them before sending.
+          </p>
+          <button v-if="attachedFileCount || missingMultipartFiles" class="focus-ring w-fit rounded-md border border-border bg-elevated px-3 py-2 text-sm font-semibold" type="button" @click="clearMultipartFiles">
+            Clear files
+          </button>
+          <p class="m-0 text-sm text-secondary">
+            Files are not saved and must be reselected after reloading.
           </p>
         </div>
       </div>

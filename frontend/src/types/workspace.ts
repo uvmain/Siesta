@@ -6,7 +6,7 @@ export interface EnvironmentEntry {
   secret: boolean
 }
 
-export type BodyMode = 'raw' | 'form-data'
+export type BodyMode = 'none' | 'raw' | 'json' | 'xml' | 'text' | 'html' | 'javascript' | 'form-data' | 'urlencoded' | 'binary'
 
 export interface RequestEntry {
   key: string
@@ -27,6 +27,10 @@ export interface StoredRequest {
   body: string
   bodyMode?: BodyMode
   formFields?: FormField[]
+  urlEncodedFields?: RequestEntry[]
+  fileFieldName?: string
+  multipartFileNames?: string[]
+  binaryFileName?: string
   auth?: RequestAuth
   folderId?: string
   description?: string

@@ -3,6 +3,7 @@ import type { Collection, Environment, FormField, RequestAuth, RequestHistory, R
 import type { BodyMode, CollectionContents, CollectionOverview, EnvironmentEntry, RequestEntry, StoredFolder, StoredRequest } from '~/types/workspace'
 import { api } from '~/logic/api'
 import { applyRequestAuth } from '~/logic/request-auth'
+import { encodeFormFields, setBodyContentType, validateJsonBody } from '~/logic/request-body'
 import { headersFromEntries, parseHeaderEntries, syncQueryEntries, urlWithQueryEntries } from '~/logic/request-entries'
 import { createRequestDraft, useWorkspaceState } from '~/logic/workspace-state'
 
@@ -26,8 +27,13 @@ const params = ref<RequestEntry[]>(syncQueryEntries(activeDraft.url, activeDraft
 const body = ref(activeDraft.body)
 const bodyMode = ref<BodyMode>(activeDraft.bodyMode)
 const formFields = ref<FormField[]>(activeDraft.formFields)
-const fileFieldName = ref('file')
+const urlEncodedFields = ref<RequestEntry[]>(activeDraft.urlEncodedFields ?? [])
+const fileFieldName = ref(activeDraft.fileFieldName ?? 'file')
 const attachedFiles = ref<File[]>([])
+const multipartFileNames = ref<string[]>(activeDraft.multipartFileNames ?? [])
+const binaryFile = ref<File>()
+const binaryFileName = ref(activeDraft.binaryFileName ?? '')
+const tabFiles = new Map<string, { multipart: File[], binary?: File }>()
 const requestAuth = ref<RequestAuth>({ type: 'none' })
 const sending = ref(false)
 const requestError = ref('')
@@ -203,6 +209,27 @@ function addFormField(): void {
 
 function setAttachedFiles(event: Event): void {
   attachedFiles.value = Array.from((event.target as HTMLInputElement).files ?? [])
+  multipartFileNames.value = attachedFiles.value.map(file => file.name)
+  rememberFiles()
+}
+
+function setBinaryFile(event: Event): void {
+  binaryFile.value = (event.target as HTMLInputElement).files?.[0]
+  binaryFileName.value = binaryFile.value?.name ?? ''
+  rememberFiles()
+}
+
+function clearFiles(): void {
+  attachedFiles.value = []
+  multipartFileNames.value = []
+  rememberFiles()
+}
+
+function rememberFiles(): void {
+  const id = session.value.activeRequestTabId
+  tabFiles.set(id, { multipart: attachedFiles.value, binary: binaryFile.value })
+  saveDraft(id, currentDraft())
+  updateRequestTab(id, { dirty: true })
 }
 
 function currentDraft() {
@@ -215,6 +242,10 @@ function currentDraft() {
     body: body.value,
     bodyMode: bodyMode.value,
     formFields: formFields.value,
+    urlEncodedFields: urlEncodedFields.value,
+    fileFieldName: fileFieldName.value,
+    multipartFileNames: multipartFileNames.value,
+    binaryFileName: binaryFileName.value,
     ...(selectedFolderId.value ? { folderId: selectedFolderId.value } : {}),
   }
 }
@@ -244,9 +275,14 @@ function applyActiveDraft(): void {
   body.value = draft.body
   bodyMode.value = draft.bodyMode
   formFields.value = draft.formFields.map(field => ({ ...field }))
+  urlEncodedFields.value = draft.urlEncodedFields?.map(field => ({ ...field })) ?? []
+  fileFieldName.value = draft.fileFieldName ?? 'file'
+  multipartFileNames.value = draft.multipartFileNames ?? []
+  binaryFileName.value = draft.binaryFileName ?? ''
   selectedFolderId.value = draft.folderId
   requestAuth.value = { ...auth }
-  attachedFiles.value = []
+  attachedFiles.value = tabFiles.get(session.value.activeRequestTabId)?.multipart ?? []
+  binaryFile.value = tabFiles.get(session.value.activeRequestTabId)?.binary
   requestError.value = ''
   result.value = undefined
   restoringDraft.value = false
@@ -294,6 +330,7 @@ function finishCloseTab(id: string): void {
   const activeTabId = session.value.activeRequestTabId
   closeRequestTab(id)
   delete tabAuth.value[id]
+  tabFiles.delete(id)
   if (activeTabId === id) {
     applyActiveDraft()
   }
@@ -479,6 +516,10 @@ async function saveRequest(): Promise<void> {
     body: body.value,
     bodyMode: bodyMode.value,
     formFields: formFields.value.filter(field => field.key),
+    urlEncodedFields: urlEncodedFields.value,
+    fileFieldName: fileFieldName.value,
+    multipartFileNames: multipartFileNames.value,
+    binaryFileName: binaryFileName.value,
     auth: currentAuth(),
     ...(selectedFolderId.value ? { folderId: selectedFolderId.value } : {}),
   }
@@ -505,6 +546,10 @@ function openRequest(request: StoredRequest): void {
     body: request.body,
     bodyMode: request.bodyMode ?? 'raw',
     formFields: request.formFields?.length ? request.formFields : [{ key: '', value: '' }],
+    urlEncodedFields: request.urlEncodedFields ?? [],
+    fileFieldName: request.fileFieldName ?? 'file',
+    multipartFileNames: request.multipartFileNames ?? [],
+    binaryFileName: request.binaryFileName ?? '',
     ...(request.folderId ? { folderId: request.folderId } : {}),
   }, request.name)
   tabAuth.value[id] = request.auth ?? { type: 'none' }
@@ -645,6 +690,24 @@ async function sendRequest(): Promise<void> {
     requestError.value = error instanceof Error ? error.message : 'Headers must be valid JSON'
     return
   }
+  if (bodyMode.value === 'binary' && !binaryFile.value) {
+    requestError.value = 'Select a binary file before sending.'
+    return
+  }
+  if (bodyMode.value === 'form-data' && multipartFileNames.value.length && !attachedFiles.value.length) {
+    requestError.value = 'Reselect or clear the saved multipart files before sending.'
+    return
+  }
+  if (bodyMode.value === 'json' && validateJsonBody(resolveBrowserVariables(body.value))) {
+    requestError.value = 'Body is not valid JSON after resolving variables.'
+    return
+  }
+  const hasBody = bodyMode.value === 'binary' || (bodyMode.value === 'form-data') || bodyMode.value === 'urlencoded'
+    || (bodyMode.value !== 'none' && Boolean(body.value))
+  if (['GET', 'HEAD'].includes(method.value.toUpperCase()) && hasBody) {
+    requestError.value = `${method.value.toUpperCase()} requests cannot include a body`
+    return
+  }
 
   sending.value = true
   try {
@@ -652,8 +715,10 @@ async function sendRequest(): Promise<void> {
       url: url.value,
       method: method.value,
       headers: parsedHeaders,
-      body: body.value || undefined,
+      bodyMode: bodyMode.value,
+      body: ['raw', 'json', 'xml', 'text', 'html', 'javascript'].includes(bodyMode.value) ? body.value || undefined : undefined,
       formFields: bodyMode.value === 'form-data' ? formFields.value.filter(field => field.key) : undefined,
+      urlEncodedFields: bodyMode.value === 'urlencoded' ? urlEncodedFields.value.filter(field => field.enabled && field.key).map(({ key, value }) => ({ key, value })) : undefined,
       fileFieldName: bodyMode.value === 'form-data' ? fileFieldName.value : undefined,
       auth: currentAuth(),
       collectionId: selectedCollection.value?.id,
@@ -662,8 +727,16 @@ async function sendRequest(): Promise<void> {
     if (selectedContents.value.executionMode === 'browser') {
       const browserHeaders = Object.fromEntries(Object.entries(parsedHeaders).map(([key, value]) => [resolveBrowserVariables(key), resolveBrowserVariables(value)]))
       const browserUrl = new URL(resolveBrowserVariables(url.value))
+      const browserBody = request.bodyMode === 'form-data'
+        ? makeBrowserFormData()
+        : request.bodyMode === 'binary'
+          ? binaryFile.value
+          : request.bodyMode === 'urlencoded'
+            ? encodeFormFields(request.urlEncodedFields ?? [], resolveBrowserVariables)
+            : request.body ? resolveBrowserVariables(request.body) : undefined
       await applyRequestAuth(effectiveAuth(), browserUrl, browserHeaders, resolveBrowserVariables)
-      if (bodyMode.value === 'form-data') {
+      setBodyContentType(browserHeaders, request.bodyMode)
+      if (request.bodyMode === 'form-data') {
         for (const key of Object.keys(browserHeaders)) {
           if (key.toLowerCase() === 'content-type') {
             delete browserHeaders[key]
@@ -671,9 +744,9 @@ async function sendRequest(): Promise<void> {
         }
       }
       const response = await fetch(browserUrl, {
-        method: method.value,
+        method: request.method,
         headers: browserHeaders,
-        body: bodyMode.value === 'form-data' ? makeBrowserFormData() : body.value ? resolveBrowserVariables(body.value) : undefined,
+        body: browserBody,
       })
       result.value = {
         status: response.status,
@@ -684,7 +757,7 @@ async function sendRequest(): Promise<void> {
       }
     }
     else {
-      result.value = await api.sendBackendRequest(request, bodyMode.value === 'form-data' ? attachedFiles.value : [])
+      result.value = await api.sendBackendRequest(request, bodyMode.value === 'form-data' ? attachedFiles.value : bodyMode.value === 'binary' && binaryFile.value ? [binaryFile.value] : [])
     }
     await saveRequestHistory()
   }
@@ -719,7 +792,7 @@ watch(headers, (value) => {
   }
 }, { flush: 'sync' })
 
-watch([method, url, headers, headerEntries, params, body, bodyMode, formFields, selectedFolderId], () => {
+watch([method, url, headers, headerEntries, params, body, bodyMode, formFields, urlEncodedFields, fileFieldName, selectedFolderId], () => {
   if (restoringDraft.value) {
     return
   }
@@ -849,6 +922,7 @@ onMounted(checkSession)
         v-model:body="body"
         v-model:body-mode="bodyMode"
         v-model:form-fields="formFields"
+        v-model:url-encoded-fields="urlEncodedFields"
         v-model:file-field-name="fileFieldName"
         :header-entries="headerEntries"
         :params="params"
@@ -858,11 +932,15 @@ onMounted(checkSession)
         :sending="sending"
         :error="requestError"
         :attached-file-count="attachedFiles.length"
+        :missing-multipart-files="Boolean(multipartFileNames.length && !attachedFiles.length)"
+        :binary-file-name="binaryFile?.name"
         @send="sendRequest"
         @save="saveRequest"
         @new-request="newRequest"
         @add-form-field="addFormField"
         @files-changed="setAttachedFiles"
+        @binary-changed="setBinaryFile"
+        @clear-files="clearFiles"
         @update:header-entries="updateHeaderEntries"
         @update:params="updateParams"
       />

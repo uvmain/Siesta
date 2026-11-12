@@ -3,10 +3,9 @@
     "composite": true,
     "target": "es2022",
     "lib": ["es2023", "esnext", "DOM"],
+    "rootDir": ".",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "outDir": "dist",
-    "rootDir": ".",
     "paths": {
       "~/*": ["./src/*"]
     },
@@ -16,6 +15,7 @@
     ],
     "strict": true,
     "noEmit": true,
+    "outDir": "dist",
     "esModuleInterop": true,
     "skipLibCheck": true
   },

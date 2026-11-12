@@ -4,7 +4,7 @@ import { newRequestEntry } from '~/logic/request-entries'
 
 const props = defineProps<{
   modelValue: RequestEntry[]
-  kind: 'parameter' | 'header'
+  kind: 'parameter' | 'header' | 'form field'
 }>()
 
 const emit = defineEmits<{

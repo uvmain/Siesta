@@ -1,4 +1,4 @@
-import type { RequestEntry } from '~/types/workspace'
+import type { BodyMode, RequestEntry } from '~/types/workspace'
 import { ref, watch } from 'vue'
 
 export type Theme = 'dark' | 'light'
@@ -17,8 +17,12 @@ export interface RequestDraft {
   headerEntries?: RequestEntry[]
   params?: RequestEntry[]
   body: string
-  bodyMode: 'raw' | 'form-data'
+  bodyMode: BodyMode
   formFields: Array<{ key: string, value: string }>
+  urlEncodedFields?: RequestEntry[]
+  fileFieldName?: string
+  multipartFileNames?: string[]
+  binaryFileName?: string
   folderId?: string
 }
 
@@ -88,6 +92,8 @@ function copyDraft(draft: RequestDraft): RequestDraft {
     formFields: draft.formFields.map(field => ({ ...field })),
     headerEntries: draft.headerEntries?.map(entry => ({ ...entry })),
     params: draft.params?.map(entry => ({ ...entry })),
+    urlEncodedFields: draft.urlEncodedFields?.map(entry => ({ ...entry })),
+    multipartFileNames: draft.multipartFileNames?.slice(),
   }
 }
 

@@ -69,6 +69,8 @@ export interface BackendRequest {
   headers: Record<string, string>
   body?: string
   formFields?: FormField[]
+  bodyMode?: 'none' | 'raw' | 'json' | 'xml' | 'text' | 'html' | 'javascript' | 'form-data' | 'urlencoded' | 'binary'
+  urlEncodedFields?: FormField[]
   fileFieldName?: string
   auth: RequestAuth
   collectionId?: number
@@ -186,7 +188,7 @@ export const api = {
     const formData = new FormData()
     formData.append('request', JSON.stringify(requestData))
     for (const file of files) {
-      formData.append(`file:${requestData.fileFieldName || 'file'}`, file, file.name)
+      formData.append(requestData.bodyMode === 'binary' ? 'binary' : `file:${requestData.fileFieldName || 'file'}`, file, file.name)
     }
     return request('/api/requests/send', { method: 'POST', body: formData })
   },

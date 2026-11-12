@@ -27,6 +27,8 @@ let receivedUrl = ''
 let tokenCalls = 0
 let tokenBody = ''
 let tokenAuthorization: string | undefined
+let receivedBody = Buffer.alloc(0)
+let receivedContentType: string | undefined
 const upstream = createServer((request, response) => {
   if (request.url?.startsWith('/token')) {
     tokenCalls++
@@ -51,7 +53,13 @@ const upstream = createServer((request, response) => {
   receivedAuthorization = request.headers.authorization
   receivedKey = request.headers['x-api-key'] as string | undefined
   receivedUrl = request.url ?? ''
-  response.writeHead(204).end()
+  receivedContentType = request.headers['content-type']
+  const chunks: Buffer[] = []
+  request.on('data', chunk => chunks.push(Buffer.from(chunk)))
+  request.on('end', () => {
+    receivedBody = Buffer.concat(chunks)
+    response.writeHead(204).end()
+  })
 })
 
 before(async () => {
@@ -240,6 +248,7 @@ test('inherits OAuth and resolves environment variables before collection variab
     headers: { 'Content-Type': 'application/json', 'Cookie': sessionCookie },
     body: JSON.stringify({ name: 'OAuth environment', values: { SECRET: 'environment secret', TOKEN_URL: `${upstreamUrl}/token` }, secretKeys: ['SECRET'] }),
   })
+
   assert.equal(environment.status, 201)
   const environmentId = (await environment.json() as { id: number }).id
   const collection = await request(`/api/collections/${collectionId}`, {
@@ -257,4 +266,61 @@ test('inherits OAuth and resolves environment variables before collection variab
   assert.equal(receivedAuthorization, 'Bearer fresh-token')
   assert.equal(new URLSearchParams(tokenBody).get('client_id'), 'client')
   assert.equal(new URLSearchParams(tokenBody).get('client_secret'), 'environment secret')
+})
+
+test('sends URL encoded fields with variable resolution and explicit content type override', async () => {
+  const response = await sendBackend({
+    method: 'POST',
+    collectionId,
+    bodyMode: 'urlencoded',
+    headers: { 'Content-Type': 'custom/type', 'Authorization': 'manual' },
+    urlEncodedFields: [{ key: '{{CLIENT}}', value: 'a & b' }, { key: '{{CLIENT}}', value: 'é' }],
+  })
+  assert.equal(response.status, 200)
+  assert.equal(receivedContentType, 'custom/type')
+  assert.equal(receivedBody.toString(), 'client=a+%26+b&client=%C3%A9')
+})
+
+test('sends structured JSON and honors none mode', async () => {
+  let response = await sendBackend({ method: 'POST', collectionId, headers: { Authorization: 'manual' }, bodyMode: 'json', body: '{"id":"{{CLIENT}}"}' })
+  assert.equal(response.status, 200)
+  assert.equal(receivedContentType, 'application/json')
+  assert.equal(receivedBody.toString(), '{"id":"client"}')
+  response = await sendBackend({ method: 'POST', bodyMode: 'json', body: 'invalid' })
+  assert.equal(response.status, 400)
+  response = await sendBackend({ method: 'POST', bodyMode: 'none', body: 'ignored' })
+  assert.equal(response.status, 200)
+  assert.equal(receivedBody.length, 0)
+})
+
+test('sends binary bytes without multipart encoding and rejects missing file', async () => {
+  const bytes = new Uint8Array([0, 255, 13, 10, 128])
+  const data = new FormData()
+  data.append('request', JSON.stringify({ method: 'POST', url: `${upstreamUrl}/resource`, bodyMode: 'binary' }))
+  data.append('binary', new Blob([bytes]), 'sample.bin')
+  const response = await request('/api/requests/send', { method: 'POST', headers: { Cookie: sessionCookie }, body: data })
+  assert.equal(response.status, 200)
+  assert.equal(receivedContentType, 'application/octet-stream')
+  assert.deepEqual(receivedBody, Buffer.from(bytes))
+  assert.equal((await sendBackend({ method: 'POST', bodyMode: 'binary' })).status, 400)
+  assert.equal((await sendBackend({ method: 'GET', bodyMode: 'urlencoded' })).status, 400)
+})
+
+test('preserves multipart uploads and resolves form fields', async () => {
+  const data = new FormData()
+  data.append('request', JSON.stringify({
+    method: 'POST',
+    url: `${upstreamUrl}/resource`,
+    collectionId,
+    bodyMode: 'form-data',
+    headers: { 'Authorization': 'manual', 'Content-Type': 'multipart/form-data' },
+    formFields: [{ key: 'id', value: '{{CLIENT}}' }],
+  }))
+  data.append('file:upload', new Blob(['file contents']), 'sample.txt')
+  const response = await request('/api/requests/send', { method: 'POST', headers: { Cookie: sessionCookie }, body: data })
+  assert.equal(response.status, 200)
+  assert.match(receivedContentType ?? '', /^multipart\/form-data; boundary=/)
+  const form = await new Response(receivedBody, { headers: { 'Content-Type': receivedContentType ?? '' } }).formData()
+  assert.equal(form.get('id'), 'client')
+  assert.equal(await (form.get('upload') as File).text(), 'file contents')
 })

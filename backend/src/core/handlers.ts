@@ -49,6 +49,8 @@ interface SendRequest {
   headers?: Record<string, string>
   body?: string
   formFields?: FormField[]
+  bodyMode?: 'none' | 'raw' | 'json' | 'xml' | 'text' | 'html' | 'javascript' | 'form-data' | 'urlencoded' | 'binary'
+  urlEncodedFields?: FormField[]
   auth?: RequestAuth
   collectionId?: number
   environmentId?: number
@@ -717,9 +719,13 @@ async function applyRequestAuth(auth: RequestAuth | undefined, url: URL, headers
   }
 }
 
-async function sendRequest(c: Context, body: SendRequest, uploadedFiles: UploadedFile[]): Promise<Response> {
-  if (typeof body.url !== 'string' || typeof body.method !== 'string' || (body.headers !== undefined && !isStringRecord(body.headers)) || (body.body !== undefined && typeof body.body !== 'string') || (body.formFields !== undefined && !isFormFields(body.formFields)) || (body.auth !== undefined && !isRequestAuth(body.auth))) {
+async function sendRequest(c: Context, body: SendRequest, uploadedFiles: UploadedFile[], binaryFiles: File[] = []): Promise<Response> {
+  if (!body || typeof body !== 'object' || typeof body.url !== 'string' || typeof body.method !== 'string' || (body.headers !== undefined && !isStringRecord(body.headers)) || (body.body !== undefined && typeof body.body !== 'string') || (body.formFields !== undefined && !isFormFields(body.formFields)) || (body.urlEncodedFields !== undefined && !isFormFields(body.urlEncodedFields)) || (body.bodyMode !== undefined && !['none', 'raw', 'json', 'xml', 'text', 'html', 'javascript', 'form-data', 'urlencoded', 'binary'].includes(body.bodyMode)) || (body.auth !== undefined && !isRequestAuth(body.auth))) {
     return c.json({ error: 'url, method, headers, and body are invalid' }, 400)
+  }
+  const bodyMode = body.bodyMode ?? (body.formFields || uploadedFiles.length ? 'form-data' : 'raw')
+  if ((bodyMode === 'binary' && (binaryFiles.length !== 1 || uploadedFiles.length)) || (bodyMode !== 'binary' && binaryFiles.length) || (bodyMode !== 'form-data' && uploadedFiles.length)) {
+    return c.json({ error: 'Invalid files for the selected body type' }, 400)
   }
 
   let variables: Record<string, string> = {}
@@ -766,15 +772,36 @@ async function sendRequest(c: Context, body: SendRequest, uploadedFiles: Uploade
   }
 
   const method = body.method.toUpperCase()
-  if ((method === 'GET' || method === 'HEAD') && (body.body || body.formFields?.length || uploadedFiles.length)) {
+  if ((method === 'GET' || method === 'HEAD') && (['binary', 'form-data', 'urlencoded'].includes(bodyMode) || (bodyMode !== 'none' && body.body))) {
     return c.json({ error: `${method} requests cannot include a body` }, 400)
+  }
+  if (bodyMode === 'json') {
+    try {
+      JSON.parse(resolveVariables(body.body ?? '', variables))
+    }
+    catch {
+      return c.json({ error: 'Body is not valid JSON after resolving variables' }, 400)
+    }
   }
 
   try {
     const requestHeaders = Object.fromEntries(Object.entries(body.headers ?? {}).map(([key, value]) => [resolveVariables(key, variables), resolveVariables(value, variables)]))
     await applyRequestAuth(body.auth?.type === 'none' ? collectionAuth : body.auth ?? collectionAuth, url, requestHeaders, variables)
-    let requestBody: string | FormData | undefined
-    if (body.formFields || uploadedFiles.length) {
+    const contentTypes: Partial<Record<NonNullable<SendRequest['bodyMode']>, string>> = {
+      json: 'application/json',
+      xml: 'application/xml',
+      text: 'text/plain',
+      html: 'text/html',
+      javascript: 'application/javascript',
+      urlencoded: 'application/x-www-form-urlencoded',
+      binary: 'application/octet-stream',
+    }
+    const contentType = contentTypes[bodyMode]
+    if (contentType && !Object.keys(requestHeaders).some(key => key.toLowerCase() === 'content-type')) {
+      requestHeaders['Content-Type'] = contentType
+    }
+    let requestBody: string | FormData | File | undefined
+    if (bodyMode === 'form-data') {
       for (const key of Object.keys(requestHeaders)) {
         if (key.toLowerCase() === 'content-type') {
           delete requestHeaders[key]
@@ -789,7 +816,17 @@ async function sendRequest(c: Context, body: SendRequest, uploadedFiles: Uploade
       }
       requestBody = formData
     }
-    else {
+    else if (bodyMode === 'binary') {
+      requestBody = binaryFiles[0]
+    }
+    else if (bodyMode === 'urlencoded') {
+      const fields = new URLSearchParams()
+      for (const field of body.urlEncodedFields ?? []) {
+        fields.append(resolveVariables(field.key, variables), resolveVariables(field.value, variables))
+      }
+      requestBody = fields.toString()
+    }
+    else if (bodyMode !== 'none') {
       requestBody = body.body ? resolveVariables(body.body, variables) : undefined
     }
     const response = await fetch(url, {
@@ -833,10 +870,14 @@ export async function handleSendRequest(c: Context): Promise<Response> {
     return c.json({ error: 'request must be valid JSON' }, 400)
   }
   const uploadedFiles: UploadedFile[] = []
+  const binaryFiles: File[] = []
   for (const [key, value] of formData.entries()) {
     if (key.startsWith('file:') && value instanceof File) {
       uploadedFiles.push({ key: key.slice(5), file: value })
     }
+    else if (key === 'binary' && value instanceof File) {
+      binaryFiles.push(value)
+    }
   }
-  return sendRequest(c, request, uploadedFiles)
+  return sendRequest(c, request, uploadedFiles, binaryFiles)
 }
