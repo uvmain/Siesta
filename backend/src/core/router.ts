@@ -50,18 +50,6 @@ export function createRoutes(app: Hono) {
 
   app.post('/api/requests/send', c => handlers.handleSendRequest(c))
 
-  app.get('/api/kv/:key', c => handlers.handleGetRequest(c))
-
-  app.get('/api/kv', c => handlers.handleGetAllRequest(c))
-
-  app.put('/api/kv', c => handlers.handlePutRequest(c))
-
-  app.delete('/api/kv/:key', c => handlers.handleDeleteRequest(c))
-
-  app.delete('/api/kv', c => handlers.handleDeleteAllRequest(c))
-
-  app.get('/api/health', c => handlers.handleHealthCheckRequest(c))
-
   // any other path, return the frontend index.html file
   app.get('*', serveStatic({ root: './dist/dist', index: 'index.html' }))
 }

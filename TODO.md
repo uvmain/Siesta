@@ -1,4 +1,4 @@
-# siesta feature roadmap
+# Siesta feature roadmap
 
 - [x] Replace bearer-token access with a single-user, HttpOnly cookie session.
 - [x] Bootstrap the initial account from `AUTH_USERNAME` and `AUTH_PASSWORD`, defaulting to `admin` / `password`.

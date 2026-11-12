@@ -31,13 +31,13 @@ onMounted(checkSession)
   <main class="box-border grid min-h-full place-items-center p-4 sm:p-8">
     <form class="w-full max-w-[360px] rounded-xl border border-slate-300 bg-white p-8 shadow-[0_8px_30px_rgb(15_23_42_/_8%)]" @submit.prevent="login">
       <p class="mt-0 text-xs font-bold tracking-[.14em] text-indigo-600">
-        siesta
+        Siesta
       </p>
       <h1 class="mt-0">
         Sign in
       </h1>
       <p class="mt-0 text-slate-500">
-        Use the credentials configured for this siesta instance.
+        Use the credentials configured for this Siesta instance.
       </p>
       <label class="mt-4 grid gap-2 font-semibold text-slate-700">
         Username

@@ -61,7 +61,7 @@ function selectProfileAction(id: string): void {
       </UiIconButton>
       <div class="flex shrink-0 items-center gap-2">
         <span class="grid size-7 place-items-center rounded-md bg-accent text-sm font-bold text-white" aria-hidden="true">S</span>
-        <span class="hidden text-sm font-bold tracking-wide sm:inline">siesta</span>
+        <span class="hidden text-sm font-bold tracking-wide sm:inline">Siesta</span>
       </div>
       <select class="ui-control hidden min-w-36 lg:block" aria-label="Workspace">
         <option>Personal workspace</option>

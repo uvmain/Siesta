@@ -1,6 +1,6 @@
-# siesta
+# Siesta
 
-siesta is a single-user REST API client. Collections can send requests directly from the browser or through siesta, which persists application data in SQLite.
+Siesta is a single-user REST API client. Collections can send requests directly from the browser or through the server, which persists application data in SQLite.
 
 ## Stack
 
@@ -24,7 +24,7 @@ cp .env.example backend/.env
 pnpm dev
 ```
 
-Open `http://siesta.localhost`. Caddy routes `/api/*` to the Hono server on port 8080 and all other requests to the Vite development server.
+Open `https://siesta.localhost`. Caddy routes `/api/*` to the Hono server on port 8080 and all other requests to the Vite development server.
 
 The backend reads `AUTH_USERNAME`, `AUTH_PASSWORD`, and `DB_PATH` from its environment or from `backend/.env`. Environment variables take precedence. The initial credentials default to `admin` / `password` if omitted. They are used only when the database has no user yet; after that, change the password from the app rather than by changing the environment. The default data directory is gitignored.
 
@@ -64,7 +64,7 @@ docker run --rm --publish 8080:8080 --env AUTH_USERNAME=admin --env AUTH_PASSWOR
 
 ## API and persistence
 
-All `/api` endpoints except health and sign-in require an HttpOnly, `SameSite=Lax` cookie session. siesta stores password hashes, sessions, collections, and named environments in SQLite. Collection variables provide reusable, non-secret defaults; selected environment values, including secrets, override them. Both scopes resolve `{{VARIABLE}}` placeholders before a request is sent. Marking an environment variable secret masks it in the environment editor; it remains available to requests.
+All `/api` endpoints except health and sign-in require an HttpOnly, `SameSite=Lax` cookie session. Siesta stores password hashes, sessions, collections, and named environments in SQLite. Collection variables provide reusable, non-secret defaults; selected environment values, including secrets, override them. Both scopes resolve `{{VARIABLE}}` placeholders before a request is sent. Marking an environment variable secret masks it in the environment editor; it remains available to requests.
 
 The initial REST-client API is:
 
@@ -81,27 +81,10 @@ The initial REST-client API is:
 | `PUT`, `DELETE` | `/api/environments/:id` | Update or delete an environment |
 | `POST` | `/api/requests/send` | Make a server-side HTTP request |
 
-The starter cache API remains available:
-
-| Method | Endpoint | Description |
-| --- | --- | --- |
-| `GET` | `/api/kv/:key` | Read a cache value |
-| `GET` | `/api/kv` | List unexpired cache rows |
-| `PUT` | `/api/kv` | Store a value (`key`, `value`, optional `ttl`) |
-| `DELETE` | `/api/kv/:key` | Remove one value |
-| `DELETE` | `/api/kv` | Clear the cache |
-| `GET` | `/api/health` | Health check |
-
-Rows are stored in SQLite with WAL enabled. Values expire after five minutes by default; pass an optional `ttl` in milliseconds to change that duration.
-
 ## Request composition
 
-Requests support Basic and Bearer authentication helpers, raw request bodies, and multipart form-data. File inputs are sent directly in browser mode or relayed through siesta in backend mode; saved requests retain their form fields but not the local file selection.
+Requests support Basic and Bearer authentication helpers, raw request bodies, and multipart form-data. File inputs are sent directly in browser mode or relayed through Siesta in backend mode; saved requests retain their form fields but not the local file selection.
 
 ## Backups
 
 Use **Backup all** to download collections and environments as a versioned JSON document. **Restore backup** merges collection copies into the workspace and updates environments with matching names.
-
-## Browser verification
-
-`.github/mcp.json` configures the Playwright MCP server for Copilot sessions. It starts through `npx` when enabled by Copilot and can be used to inspect and verify the running application in a browser.
