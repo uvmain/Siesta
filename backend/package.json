@@ -1,0 +1,31 @@
+{
+  "name": "dac-backend",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.10.1",
+  "description": "",
+  "author": "",
+  "license": "ISC",
+  "keywords": [],
+  "main": "server.js",
+  "scripts": {
+    "dev": "tsx --watch src/server.ts",
+    "start": "node dist/server.js",
+    "clean": "node ./utils/rmr.js node_modules dist",
+    "prebuild": "node ../utils/rmr.js dist",
+    "build": "tsc",
+    "test": "tsx --test test/api.test.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.4",
+    "better-sqlite3": "13.0.3",
+    "hono": "^4.13.13"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.4",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3"
+  }
+}

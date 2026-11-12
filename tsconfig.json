@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "useDefineForClassFields": true,
+    "rootDir": ".",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": false,
+    "types": [
+      "@types/node"
+    ],
+    "allowJs": true,
+    "checkJs": false,
+    "strictNullChecks": true,
+    "strictPropertyInitialization": false,
+    "noImplicitAny": true,
+    "declaration": true,
+    "outDir": "dist",
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  },
+  "rules": {
+    "quotemark": [
+      true,
+      "single"
+    ]
+  },
+  "exclude": ["node_modules", "dist", "eslint.config.js"]
+}

@@ -1,0 +1,44 @@
+{
+  "name": "siesta",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.10.1",
+  "description": "",
+  "author": "",
+  "license": "ISC",
+  "keywords": [],
+  "main": "server.js",
+  "scripts": {
+    "dev:backend": "pnpm --filter ./backend dev",
+    "preview:backend": "pnpm --filter ./backend start",
+    "dev:frontend": "pnpm --filter ./frontend dev",
+    "dev": "concurrently pnpm:caddy pnpm:dev:backend pnpm:dev:frontend",
+    "caddy": "caddy run --config Caddyfile",
+    "caddy:preview": "caddy run --config Caddyfile.preview",
+    "preview": "pnpm run build && concurrently pnpm:caddy:preview pnpm:preview:backend",
+    "clean:modules": "node ./utils/rmr.js node_modules frontend/node_modules backend/node_modules",
+    "clean:dist": "node ./utils/rmr.js frontend/dist backend/dist",
+    "build:frontend": "pnpm --filter ./frontend build",
+    "build:backend": "pnpm --filter ./backend build",
+    "build": "pnpm run clean:dist && pnpm run build:frontend && pnpm run build:backend && node utils/copydist.js",
+    "test:backend": "pnpm --filter ./backend test",
+    "lint": "eslint",
+    "lint:fix": "eslint --fix"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.4",
+    "better-sqlite3": "13.0.3",
+    "hono": "^4.13.13"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^9.5.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.4",
+    "@unocss/eslint-plugin": "^66.10.5",
+    "caddy-baron": "^5.0.2",
+    "concurrently": "^10.0.6",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3"
+  }
+}

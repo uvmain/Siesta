@@ -1,0 +1,9 @@
+{
+  admin off
+}
+
+siesta.localhost {
+	handle {
+		reverse_proxy localhost:8080
+	}
+}

@@ -1,0 +1,13 @@
+minimumReleaseAge: 1440
+minimumReleaseAgeExcludePrune: true
+trustPolicy: no-downgrade
+shellEmulator: true
+
+packages:
+  - backend
+  - frontend
+
+allowBuilds:
+  better-sqlite3: true
+  caddy-baron: true
+  esbuild: true

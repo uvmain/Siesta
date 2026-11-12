@@ -1,0 +1,8 @@
+variables:
+  SCHEDULED_APPROVAL: 'false'
+
+include:
+  - local: cicd/auto_approve.yml
+
+stages:
+  - approve

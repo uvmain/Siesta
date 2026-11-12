@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "es2022",
+    "lib": ["es2023", "esnext", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": [
+      "node",
+      "vite/client"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "vite.config.*",
+    "uno.config.ts",
+    "components.d.ts",
+    "auto-imports.d.ts",
+    "./route-map.d.ts",
+    "src/**/*"
+  ],
+  "ts-node": {
+    "files": true
+  },
+  "exclude": ["node_modules", "dist", "eslint.config.js"],
+  "vueCompilerOptions": {
+    "plugins": [
+      "vue-router/volar/sfc-typed-router",
+      "vue-router/volar/sfc-route-blocks"
+    ]
+  }
+}
